@@ -4,11 +4,35 @@ import { StatusDot } from "./StatusDot";
 interface Props {
   state: AppState;
   controller: AppController;
+  onOpenSessions: () => void;
+  onOpenSettings: () => void;
 }
 
-export function TopBar({ state, controller }: Props) {
-  const { activeProfile, connectionStatus, models, settings } = state;
-  const selectedModel = settings.defaultModelId;
+export function TopBar({
+  state,
+  controller,
+  onOpenSessions,
+  onOpenSettings,
+}: Props) {
+  const {
+    activeProfile,
+    connectionStatus,
+    models,
+    settings,
+    sessions,
+    sessionPhases,
+  } = state;
+
+  const activeSession = state.activeSessionId
+    ? sessions.find((s) => s.id === state.activeSessionId) ?? null
+    : null;
+  const selectedModel =
+    activeSession?.modelId || settings.defaultModelId || "";
+
+  const anyStreaming = Object.values(sessionPhases).some(
+    (p) => p === "streaming",
+  );
+  const sessionCount = sessions.length;
 
   return (
     <header className="top-bar" role="banner">
@@ -22,7 +46,8 @@ export function TopBar({ state, controller }: Props) {
         type="button"
         className="profile-label"
         title={`Showing conversations for ${activeProfile.hostShort}`}
-        aria-label={`Connection profile ${activeProfile.hostShort}. Open settings.`}
+        aria-label={`Connection: ${activeProfile.hostShort}. Open settings.`}
+        onClick={onOpenSettings}
       >
         <span className="profile-label__host">{activeProfile.hostShort}</span>
       </button>
@@ -33,24 +58,56 @@ export function TopBar({ state, controller }: Props) {
           value={selectedModel}
           onChange={(e) => controller.selectModel(e.currentTarget.value)}
           disabled={models.length === 0}
+          aria-label="Model selection"
         >
           {models.length === 0 ? (
             <option value="">No models available</option>
           ) : (
-            models.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.displayName ?? m.id}
-              </option>
-            ))
+            <>
+              {selectedModel &&
+                !models.some((m) => m.id === selectedModel) && (
+                  <option value={selectedModel} disabled>
+                    {selectedModel} (unavailable)
+                  </option>
+                )}
+              {models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.displayName ?? m.id}
+                </option>
+              ))}
+            </>
           )}
         </select>
       </label>
 
-      <button type="button" className="icon-button" aria-label="Sessions">
-        <span aria-hidden>≡</span>
+      <button
+        type="button"
+        className="icon-button icon-button--sessions"
+        onClick={onOpenSessions}
+        aria-label={`Sessions (${sessionCount})`}
+        title="Sessions"
+      >
+        <span aria-hidden>☰</span>
+        {sessionCount > 0 && (
+          <span className="icon-button__badge" aria-hidden>
+            {sessionCount}
+          </span>
+        )}
+        {anyStreaming && (
+          <span
+            className="icon-button__streaming-dot"
+            aria-label="A session is streaming"
+          />
+        )}
       </button>
 
-      <button type="button" className="icon-button" aria-label="Settings">
+      <button
+        type="button"
+        className="icon-button"
+        onClick={onOpenSettings}
+        aria-label="Settings"
+        title="Settings"
+      >
         <span aria-hidden>⚙</span>
       </button>
     </header>
