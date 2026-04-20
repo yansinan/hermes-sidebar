@@ -2,15 +2,15 @@
 
 ## 0. Status and scope
 
-**This document is the intended developer loop *after* the extension implementation lands.** At the time of writing, this repository contains design documents only — there is no `manifest.json`, no `sidepanel.html`, no background/service-worker script, and no build tooling. Every step in this file describes what the workflow *should* look like once implementation catches up with the design in [product-design.md](./product-design.md), not a procedure that works on `main` today.
+**This document tracks the developer loop as the extension is being built.** The first implementation slice — a shared scaffold with Vite + React + TypeScript, a loadable MV3 manifest, the background service worker, and a three-region side panel shell — has landed. The chat runtime (session manager, API client, SSE parser, settings drawer) is **not** wired up yet; the side panel renders its empty state and exposes the controller seam the runtime will plug into.
 
-Concretely, if you clone this repo right now:
+Concretely, if you clone this repo today:
 
-- There is nothing loadable as a Chrome unpacked extension.
-- There are no npm scripts, because no `package.json` has been chosen.
-- There is no dev server to start.
+- `npm install && npm run build` produces a loadable unpacked extension in `dist/`.
+- `npm test` runs a Vitest smoke test that mounts the side panel against a stubbed controller.
+- There is no chat flow yet: sending a message surfaces a scaffold-only banner.
 
-Use this document as a **design contract for the eventual dev workflow**. When implementation PRs start landing, they must either satisfy this document or update it. Anything here labelled "planned" or "assumed" is subject to change during implementation; items explicitly marked as **open questions** defer to the maintainers.
+Use this document as a **design contract for the eventual dev workflow**. When implementation PRs land, they must either satisfy this document or update it. Anything labelled "planned" or "assumed" is subject to change; items explicitly marked as **open questions** defer to the maintainers.
 
 Boundary notes:
 
@@ -44,83 +44,97 @@ Minimum verification that your Hermes is ready:
 
 If any of these fail, fix them on the Hermes side before touching the extension — the extension cannot paper over a backend that does not speak its contract.
 
-### 1.3 Local toolchain (assumed)
+### 1.3 Local toolchain
 
-Once implementation lands, the toolchain will likely include a package manager and a bundler for TypeScript + the chosen UI framework. **Those tools have not been picked yet**; this document does not assume `npm`, `pnpm`, `yarn`, or any specific framework. Run commands will be added to this section when the project's first implementation PR introduces them. For now, assume:
+The first implementation PR picked the following toolchain. It is the answer to open question 1 in §7 and is the only toolchain `main` currently builds against:
 
-- You will need Node.js (exact version to be pinned by the implementation PR).
-- You will run some "build the unpacked extension into `dist/`" command provided by the build tooling.
-- That build output is what you load in Chrome (§3.1).
+- **Node.js:** `24.14.1`, pinned in `.tool-versions` (asdf / mise compatible). Other recent Node versions may work but CI has not been set up yet.
+- **Package manager:** `npm`. A `package-lock.json` is checked in; do not introduce a competing lockfile.
+- **Language / UI:** TypeScript + React 18.
+- **Bundler:** Vite 5, configured in `vite.config.ts`. The side panel HTML is authored under `src/sidepanel/index.html`; a small Vite plugin (`flattenSidepanelHtmlPlugin` in `vite.config.ts`) flattens it to `dist/sidepanel.html` so the manifest can reference a stable name at the extension root.
+- **Tests:** Vitest + React Testing Library running under jsdom.
 
-If you are writing the first implementation PR, please treat this section's vagueness as an invitation to fill in: record the exact commands once, here, rather than burying them in a top-level README.
+From a fresh clone:
+
+```bash
+npm install
+npm run build     # writes dist/
+npm test          # Vitest smoke suite
+npm run typecheck # tsc --noEmit over src/ and tests/
+```
+
+The build emits:
+
+- `dist/manifest.json` (generated from `manifest.config.ts`)
+- `dist/sidepanel.html` + `dist/assets/…` (the React side panel bundle)
+- `dist/background.js` (the MV3 service worker, unbundled to a stable filename so the manifest can reference it)
+- `dist/icons/icon-{16,32,48,128}.png`
+
+`dist/` is the directory you point Chrome's **Load unpacked** at (§3.1).
 
 ---
 
-## 2. Planned project assumptions
+## 2. Project layout and manifest
 
-Everything in this section is **planned**, not realized. These are the assumptions the rest of this document is written against; if an implementation PR changes them, update this file.
+### 2.1 Current layout
 
-### 2.1 Planned layout
-
-Rough expected layout once implementation lands:
+The scaffold in `main` uses this layout. Deeper chat-runtime modules (session manager, API client, storage gateway, stream handler) will be added under `src/` as their designs in `architecture.md` are implemented.
 
 ```
 / (repo root)
-├─ docs/                    # this documentation (already exists)
-├─ src/                     # planned source tree (not yet created)
-│  ├─ sidepanel/            # the side panel page (HTML + entry)
-│  ├─ background/           # MV3 service worker (if needed)
-│  ├─ storage/              # chrome.storage wrappers
-│  ├─ api/                  # Hermes API client (the "ChatTransport" seam from product-design §8.3)
-│  └─ ui/                   # components implementing ui-spec.md
-├─ public/                  # static assets, icons
-├─ manifest.json            # planned — see §2.2 for the expected shape
-└─ dist/                    # planned build output — what you load in Chrome
+├─ docs/                   # design documents
+├─ src/
+│  ├─ sidepanel/           # React side panel page (index.html + App + TopBar / ConversationArea / Composer)
+│  ├─ background/          # MV3 service worker (service-worker.ts)
+│  ├─ shared/              # contracts: profile, session, message, tool-progress, settings, app-state
+│  └─ styles/              # global CSS
+├─ public/
+│  └─ icons/               # toolbar icons emitted at dist/icons/
+├─ tests/                  # Vitest suites
+├─ manifest.config.ts      # typed manifest source, serialized to dist/manifest.json at build time
+├─ vite.config.ts          # flattens src/sidepanel/index.html to dist/sidepanel.html at build time
+├─ tsconfig*.json
+├─ .tool-versions          # pins Node 24.14.1
+└─ dist/                   # build output — what Chrome loads (gitignored)
 ```
 
-This layout is not prescriptive. The implementation PR is free to restructure as long as the external contract — "Chrome loads `dist/` as an unpacked MV3 extension" — still holds.
+The layout is not prescriptive beyond the external contract: Chrome must be able to load `dist/` as an unpacked MV3 extension.
 
-### 2.2 Planned `manifest.json` shape
+### 2.2 `manifest.json` shape
 
-The planned manifest mirrors product-design §9.3 directly:
+The manifest is authored in `manifest.config.ts` and serialized to `dist/manifest.json` by a Vite plugin on every build. Its current shape mirrors product-design §9.3:
 
 ```jsonc
 {
   "manifest_version": 3,
   "name": "hermes-sidebar",
   "version": "0.0.0",
-  "permissions": [
-    "sidePanel",
-    "storage"
-  ],
-  "host_permissions": [
-    "http://127.0.0.1:8642/*"
-  ],
-  "optional_host_permissions": [
-    "http://*/*",
-    "https://*/*"
-  ],
-  "side_panel": {
-    "default_path": "sidepanel.html"
-  },
+  "permissions": ["sidePanel", "storage"],
+  "host_permissions": ["http://127.0.0.1:8642/*"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "side_panel": { "default_path": "sidepanel.html" },
   "action": {
-    "default_title": "hermes-sidebar"
-  }
+    "default_title": "hermes-sidebar",
+    "default_icon": { "16": "icons/icon-16.png", /* …32, 48, 128 */ }
+  },
+  "icons": { "16": "icons/icon-16.png", /* …32, 48, 128 */ },
+  "background": { "service_worker": "background.js", "type": "module" },
+  "minimum_chrome_version": "114"
 }
 ```
 
-Key points to preserve during implementation (and to verify in code review):
+Key points to preserve during future edits (and to verify in code review):
 
 - No `tabs`, `activeTab`, `scripting`, or `cookies`. v1 does not read page content (product-design §9.3).
 - `host_permissions` ships only the loopback default. Anything else is promoted to a runtime grant via `optional_host_permissions`.
 - `optional_host_permissions` is the *declaration* of what the extension *may* ask for — it is not a grant. Chrome prompts per-origin at runtime (§3.2).
-- The `action` entry is present only so `chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })` can wire the toolbar icon to open the panel.
+- The `action` entry exists so `chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })` (in `src/background/service-worker.ts`) can wire the toolbar icon to open the panel.
 
-### 2.3 Planned build output
+### 2.3 Build output
 
-- Build output goes into `dist/` (or another directory the implementation picks — document it here once chosen).
-- `dist/` must be self-contained: it should include a built `manifest.json`, the built `sidepanel.html`, any JS bundles, and any icons/assets.
-- Source maps in `dist/` are expected during development.
+- Build output goes to `dist/`. It is self-contained: generated `manifest.json`, built `sidepanel.html` + hashed JS/CSS bundles under `assets/`, an unhashed `background.js`, icons under `icons/`, and source maps.
+- `sidepanel.html` references bundles via absolute extension-root paths (`/assets/…`), which resolve correctly under `chrome-extension://<id>/`.
+- `dist/` is gitignored; regenerate with `npm run build`.
 
 ---
 
@@ -128,12 +142,12 @@ Key points to preserve during implementation (and to verify in code review):
 
 ### 3.1 First-time load
 
-After running the build command (once implementation PR defines one), load the extension in Chrome:
+After `npm install && npm run build`, load the extension in Chrome:
 
 1. Open `chrome://extensions`.
 2. Turn on **Developer mode** (toggle in the top-right).
 3. Click **Load unpacked**.
-4. Select the build output directory (planned: `dist/`).
+4. Select the `dist/` directory at the repo root.
 5. Confirm the extension appears in the list and shows no errors under `Errors`. If you see an "Unpacked extensions are being loaded" warning, that is normal.
 6. Note the **extension ID** shown under the extension's name. You will need it later for CORS configuration (§5.2). The ID is stable for this unpacked load; reloading in place keeps it, but loading from a different path gives you a new ID.
 7. Pin the extension to the toolbar (puzzle-piece icon → pin). This makes opening the side panel a single click.
@@ -155,9 +169,10 @@ If you deny the prompt, you can retry from the same settings drawer without rein
 
 During active development:
 
+- `npm run dev` runs Vite in watch mode against the same config as `npm run build` — it rebuilds `dist/` on every save, so your `chrome://extensions` reload always reflects the latest source. (Hot-reloading the extension itself is open question 3 in §7 and not in v1 scope.)
 - After a rebuild, click the **reload icon** on the extension card in `chrome://extensions`. This picks up new bundle contents without losing your granted host permissions or local storage.
 - If a change touches `manifest.json`, reload is still sufficient — full remove-and-re-add is only needed if the extension ID has to change (e.g. different unpacked path).
-- The side panel page itself can be reopened by closing the side panel and opening it again (toolbar icon). The service worker — if one ends up being needed — can be inspected and restarted from the extension card's **Inspect views** list.
+- The side panel page can be reopened by closing and reopening it (toolbar icon). The service worker can be inspected and restarted from the extension card's **Inspect views** list (`service worker` entry).
 
 `console.log` output and uncaught errors from the side panel page are visible by right-clicking inside the side panel and choosing **Inspect**. This is the side panel's own DevTools context; the host page's DevTools do not see side panel logs.
 
@@ -296,8 +311,8 @@ This is the **minimum** path to verify before considering a build locally ready 
 
 These are unresolved at the dev-setup layer. They should be decided by the implementation PRs that introduce the relevant tooling, and this file should be updated rather than accumulating parallel answers elsewhere.
 
-1. **Toolchain.** Which package manager and bundler? Record the exact install and build commands in §1.3 and §2.3 when chosen.
+1. ~~**Toolchain.** Which package manager and bundler?~~ **Resolved.** Node 24.14.1 (pinned in `.tool-versions`), `npm`, TypeScript + React + Vite + Vitest. See §1.3 and §2.3.
 2. **Pinned `key` in `manifest.json`.** Do we want a stable extension ID across unpacked loads so that team members share CORS setup? Or do we accept per-developer IDs and document the retrieval step (§3.1) as the price? Default lean: per-developer IDs for v1.
-3. **Dev-time automation.** Is there value in a "reload on rebuild" watcher that auto-reloads the extension? Nice-to-have, not a v1 blocker.
+3. **Dev-time automation.** `npm run dev` already rebuilds `dist/` on save, but does not reload the extension automatically in Chrome. A "reload on rebuild" watcher is nice-to-have, not a v1 blocker.
 4. **Containerized Hermes on the dev box.** Should this repo ship a docker-compose file that brings up a local Hermes for contributors who do not already run one? Default lean: no — running Hermes is the user's responsibility (product-design §1), and pushing a compose file blurs that boundary.
 5. **Automated end-to-end tests against a real Hermes.** Out of scope for v1 dev setup, but worth calling out so the manual checklist in §6 does not become load-bearing forever.

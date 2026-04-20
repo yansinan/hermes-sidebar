@@ -2,7 +2,7 @@
 
 A Chrome Side Panel extension that brings the Hermes Agent API server's chat experience into the browser sidebar — so you can keep your tabs and your agent open side by side.
 
-> **Status: design-first.** The repo is currently at the design and alignment stage. There is no shipping extension code yet; the documents under [`docs/`](./docs) describe what we intend to build and the boundaries we're committing to before any implementation lands. Pull requests that disagree with the design are welcome — open an issue first.
+> **Status: early scaffold.** The first implementation slice — TypeScript + React + Vite + Vitest, a loadable MV3 manifest, the background service worker, and a three-region side panel shell — has landed. The chat runtime (session manager, API client, SSE parser, settings drawer) is not wired up yet; the side panel renders its empty state against a stub controller. Running `npm install && npm run build` produces a loadable unpacked extension at `dist/`. See [`docs/dev-setup.md`](./docs/dev-setup.md) for the full loop.
 
 ## What it is
 
@@ -33,15 +33,23 @@ The extension only needs a reachable HTTP(S) endpoint that speaks the Hermes API
 
 Start at [`docs/README.md`](./docs/README.md) — it is the documentation hub and explains what each document covers and in what order to read them. The current documentation set is [`product-design.md`](./docs/product-design.md) (the product-layer spine) together with its companion docs [`architecture.md`](./docs/architecture.md), [`api-contract.md`](./docs/api-contract.md), [`ui-spec.md`](./docs/ui-spec.md), and [`dev-setup.md`](./docs/dev-setup.md).
 
+## Getting started
+
+```bash
+# Requires Node 24.14.1 (see .tool-versions) and npm.
+npm install
+npm run build     # emits dist/ (load unpacked in chrome://extensions)
+npm test          # Vitest smoke suite
+```
+
 ## Contributing
 
-Because the repo is design-first, the most useful contributions right now are:
+With the scaffold in place, the most useful contributions right now are:
 
 1. Reviewing [`docs/product-design.md`](./docs/product-design.md) and pushing back on assumptions in the **Open questions** section.
 2. Sharing real-world deployment shapes (local, LAN, remote with TLS, etc.) so the connection-config UX covers them.
-3. Filing issues for missing UI states or error cases the design overlooks.
-
-Implementation PRs are welcome once the design questions in section 12 of `product-design.md` are resolved.
+3. Implementation PRs landing one architectural seam at a time — session manager, storage gateway, API client (ChatTransport), stream handler, settings drawer — against the contracts under `src/shared/`.
+4. Filing issues for missing UI states or error cases the design overlooks.
 
 ## License
 
