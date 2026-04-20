@@ -2,7 +2,19 @@
 
 ## 1. Purpose and current assumptions
 
-This document is the first design draft for `hermes-sidebar`. Its job is to align maintainers and contributors on the product boundary, the interaction model, and the way the extension talks to a Hermes Agent API server. **It does not contain implementation code.** Module breakdown, exact API contracts, and visual specs will be split into `architecture.md`, `api-contract.md`, and `ui-spec.md` once the design here is agreed.
+This document is the product-design spine for `hermes-sidebar`. Its job is to align maintainers and contributors on the **product boundary**, the **interaction principles**, and the **state and lifecycle rules** that govern the extension and the way it talks to a Hermes Agent API server. **It does not contain implementation code.**
+
+### What this document owns vs. its companions
+
+To keep each document focused, the design set is split along fixed boundaries. This file owns the product layer; the companion docs listed in [docs/README.md](./README.md) own everything downstream:
+
+- **This document** — product boundary and positioning, scenarios, information architecture, conversation/session model and lifecycle rules, interaction principles, permissions and security posture, v1 scope and non-goals, open questions.
+- **[architecture.md](./architecture.md)** — internal module breakdown (side panel page / service worker / storage / API client), responsibility boundaries, and runtime data flows.
+- **[api-contract.md](./api-contract.md)** — the exact wire contract against the Hermes API server: endpoints, request/response shapes, SSE event shapes, error-code mapping.
+- **[ui-spec.md](./ui-spec.md)** — visual specification, component inventory, interaction details, accessibility.
+- **[dev-setup.md](./dev-setup.md)** — how the developer loop is intended to work once implementation lands.
+
+When this document references system structure, a wire-level shape, a visual detail, or a developer workflow, it does so only at the level needed to state a product rule; the companion doc is authoritative for the detail.
 
 ### Current assumptions
 
@@ -117,7 +129,7 @@ Example UI copy:
 
 ### 6.2 Middle — conversation area
 
-- Messages flow top to bottom in chronological order. User messages right-aligned, agent messages left-aligned (or all left-aligned with avatars — to be finalized in `ui-spec.md`).
+- Messages flow top to bottom in chronological order. User messages right-aligned, agent messages left-aligned (or all left-aligned with avatars — the visual decision lives in [ui-spec.md](./ui-spec.md)).
 - Markdown rendering: code blocks, lists, tables. Code blocks have a copy button.
 - **Streaming output** appears character-by-character (or token-by-token). While output is streaming, a `Stop` button is shown at the bottom.
 - Tool calls are surfaced via collapsible blocks driven by `hermes.tool.progress` SSE events. v1 only shows `Calling tool {name}…` / `Tool {name} finished`, without expanding full arguments or returns — keeping the side panel readable.
@@ -178,7 +190,7 @@ v1 takes the simplest workable strategy: **the front end owns the history, and t
 - Default channel: Chat Completions (`POST /v1/chat/completions`). The `messages` array in the request body is composed by the front end from local history.
 - This makes the backend stateless from the conversation's point of view; the front end is the source of truth.
 - Upside: simplest implementation, easiest to migrate to any other OpenAI-compatible backend.
-- Downside: long conversations grow the request body. Token cost is controlled by the front-end's truncation policy (v1 keeps the most recent N messages plus the leading system message; the exact rule is finalized in `architecture.md`).
+- Downside: long conversations grow the request body. Token cost is controlled by the front-end's truncation policy (v1 keeps the most recent N messages plus the leading system message; the exact rule is finalized in [architecture.md](./architecture.md)).
 
 ### 7.3 When to use Hermes server-side sessions
 

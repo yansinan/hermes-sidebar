@@ -31,7 +31,7 @@ The extension only needs a reachable HTTP(S) endpoint that speaks the Hermes API
 
 ## Documentation
 
-Start at [`docs/README.md`](./docs/README.md) — it is the documentation map. The substantive design is in [`docs/product-design.md`](./docs/product-design.md).
+Start at [`docs/README.md`](./docs/README.md) — it is the documentation hub and explains what each document covers and in what order to read them. The current documentation set is [`product-design.md`](./docs/product-design.md) (the product-layer spine) together with its companion docs [`architecture.md`](./docs/architecture.md), [`api-contract.md`](./docs/api-contract.md), [`ui-spec.md`](./docs/ui-spec.md), and [`dev-setup.md`](./docs/dev-setup.md).
 
 ## Contributing
 
