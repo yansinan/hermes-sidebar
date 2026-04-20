@@ -370,6 +370,92 @@ The documentation should not hard-code a conclusion. The recommended user-facing
 - The API key lives only in browser storage and is sent only as `Authorization: Bearer <API_SERVER_KEY>` to the configured endpoint. It is never written to logs or attached to any error report (v1 has no error reporting integration).
 - Because the extension can connect to remote endpoints, the user is responsible for the security of that endpoint (TLS, auth, network policy). The project documentation makes this responsibility clear and does not provide a "managed" or "shared" Hermes.
 
+### 9.6 Connection scoping and connection-change behavior
+
+This subsection is normative for v1. It defines how local sessions relate to the configured Hermes endpoint, and what happens when the user edits that configuration. The rules here interlock with the local session lifecycle in 7.6 — they deliberately preserve the front-end-is-source-of-truth stance from 7.3 while making endpoint changes safe and legible.
+
+#### What a connection profile is
+
+Local sessions are **not** a single global list shared across every backend the user has ever pointed the panel at. They are scoped to a **connection profile**, keyed by the normalized API base URL (scheme + host + port + optional path prefix; a trailing slash is canonicalized). Concretely:
+
+- `http://127.0.0.1:8642` and `http://127.0.0.1:8642/` resolve to the same profile.
+- `http://127.0.0.1:8642` and `http://localhost:8642` do **not** resolve to the same profile. v1 performs no DNS canonicalization; the user's typed host is taken at face value.
+- A profile owns the session list scoped to it, the last active session id, the last selected model id, and any captured `serverSessionRef`s (7.3) recorded against its sessions.
+- A profile does **not** own the API key. The key is stored per profile but is treated as a credential, not as part of the profile's identity. Changing the key alone does not open a different namespace.
+
+Rationale: the same local conversation cannot safely be replayed against a different backend — different model lists, different system prompts, different permissions, different tools, different governance. Treating each endpoint as its own namespace avoids silently sending a conversation originally authored against one backend into another.
+
+v1 exposes the profile implicitly via the single `API base URL` field in settings; there is no labelled multi-profile picker. Whether v1 grows one is open question 12.
+
+#### Changing the API base URL
+
+When the user saves a base URL that normalizes to a **different** profile than the one currently loaded:
+
+1. Any in-flight request in the previous profile is aborted via its `AbortController`. v1 does **not** retry or replay that send against the new endpoint.
+2. The visible session list is swapped to the list scoped to the new profile. The previous profile's sessions are **not** deleted — they remain in `chrome.storage.local` under the old profile key and reappear unchanged if the user points back at that URL.
+3. If the new profile has never been used before, the panel shows the empty-state card from section 10. No session is auto-created, and no empty draft is auto-created.
+4. If the new profile has prior sessions, the panel rehydrates the last active session for that profile using the same rules as the `Panel is reopened` row in 7.6, scoped to the new profile.
+5. The runtime permission flow (9.3) and a fresh `/health` check (8.2) run against the new URL before any send is allowed, and `GET /v1/models` is re-fetched.
+
+When the user saves a base URL that normalizes to the **same** profile (e.g. they only edited whitespace or a trailing slash), none of the above happens. The current session, the draft input, streaming state, and model selection are preserved.
+
+#### Changing only the API key
+
+When the base URL stays on the same profile and only the API key changes:
+
+- The visible session list is **unchanged**. The key is a credential, not a namespace.
+- The current active session, its messages, its draft input, and its streaming state are preserved.
+- An in-flight request is **not** aborted by a key edit alone; the user must explicitly press `Stop` to cancel a stream that is still using the old key.
+- The next send uses the new key. Prior messages are not retroactively re-authenticated.
+- `GET /v1/models` is re-fetched (8.2), since the available model set may differ for a different key.
+
+#### Model list changes after reconnect
+
+After a base-URL change, an API-key change, or a reconnect following an outage, the freshly fetched `GET /v1/models` may not contain the model the active session was using:
+
+- If the active session's `modelId` is still present in the new list, it is kept as-is on the dropdown.
+- If it is not present, existing messages keep the historical `modelId` they were actually answered with (the transcript must reflect reality), but the current-model dropdown falls back to the first model in the new list and surfaces a non-blocking banner in the conversation area.
+- The session itself is not mutated, renamed, duplicated, or moved between profiles on a model fallback. The user can switch models again at any time.
+- If the new model list is empty, sending is disabled per the `Model list empty` row in section 10.
+
+#### Connection failures never delete local sessions
+
+Local sessions are **never** deleted by a connection-level event:
+
+- A failed `/health` check, a denied runtime permission (9.3), a CORS rejection (9.4), a DNS failure, a TLS failure, a network outage, a 401, or a 403 leave every local session and its messages intact in `chrome.storage.local`.
+- The UI may disable sending and show the relevant row from section 10, but the session list, session bodies, and drafts are not touched.
+- Sessions stay local and preserved while a connection is temporarily broken; when the endpoint recovers, the user resumes against the same sessions without any re-import step.
+- Deletion of local sessions remains only ever user-initiated, per the `User deletes a session` / `User deletes the currently active session` / `All sessions are deleted` rows in 7.6.
+
+This preserves the v1 stance that the **front end is the source of truth** (7.3, 7.6): the connection can come and go; the local record does not.
+
+#### Draft input across profiles
+
+The bottom-area draft input — text the user has typed but not yet sent — is scoped to the current connection profile and lives only in memory. This mirrors the rule in 7.6 that empty drafts are not written to `chrome.storage.local`. Concretely:
+
+- When the user switches to a different profile, the visible draft input is swapped together with the visible session list. The previous profile's draft input remains in memory under that profile for as long as the panel page stays alive.
+- If the destination profile has no in-memory draft input, the input box is blank.
+- Closing the panel ends the panel page and drops every in-memory draft input, on every profile. On reopen, the input box starts blank — draft input is never persisted across panel close.
+- Connection failures (failed `/health`, denied runtime permission per 9.3, CORS rejection per 9.4, DNS or TLS failure, network outage, 401, 403) do **not** clear the current profile's in-memory draft input. As long as the panel page is alive, typed-but-unsent text survives a transient outage.
+
+This keeps the front-end-is-source-of-truth stance from 7.3 honest at the input layer too: drafts are deliberately ephemeral, scoped per profile, and never silently leak across endpoints.
+
+#### How the UI talks about these transitions
+
+The user must always be able to tell which backend the currently visible conversations belong to. The panel therefore surfaces the current profile prominently in the top region and makes every cross-profile transition observable rather than silent.
+
+Example UI copy:
+
+- Profile label in the top region: `{hostShort}` — click opens settings; tooltip on hover: `Showing conversations for {hostShort}`
+- Settings confirmation when the saved URL resolves to a different profile: `Switching to {newHostShort}. You'll see the conversations saved for that connection. Your conversations for {oldHostShort} stay saved and reappear if you switch back.`
+- Settings confirmation when the saved URL is the same profile: `Connection details updated.` (no mention of session lists, because nothing visible changes)
+- Settings confirmation when only the API key changed: `API key updated for {hostShort}.`
+- Banner after a model fallback on reconnect: `Model {oldModelId} isn't available on {hostShort}. Sends now use {newModelId}.`
+- Empty-state card for a newly reached profile: `No conversations yet for {hostShort}. Start one below.`
+- Connection-lost banner (sessions preserved): `Can't reach {hostShort} right now. Your conversations are saved locally — you can keep reading them and resume sending once the connection is back.`
+
+The intent of this copy is that a user who switches endpoints never has to ask "wait, where did my conversation go?" — the UI names the profile, states that histories are kept per profile, and shows how to get back.
+
 ---
 
 ## 10. Error states and empty states
@@ -451,3 +537,4 @@ Before implementation begins, the following must be answered with maintainers (o
 9. **Stability of the tool-progress payload.** Is the `hermes.tool.progress` event payload stable enough that v1 can rely on it for the simple "tool name + status" UI? Are additional fields needed for a sensible collapsible block?
 10. **Conversation storage size.** `chrome.storage.local` has a default ~10MB quota that can be raised with `unlimitedStorage`. Should v1 request `unlimitedStorage` at install time, or do simple session truncation? Default lean: do not request the extra permission.
 11. **Mixed-content / TLS for remote.** If a user types an `http://` remote address (not loopback), should the extension warn that credentials and message content will travel unencrypted? Should this be a soft warning or a hard refusal in v1?
+12. **Named connection profiles.** v1 keys profiles implicitly by the normalized base URL in the single `API base URL` field (9.6). Should v1 instead expose a small "connection profiles" list (name + base URL + key per entry) so users who routinely switch between several Hermes endpoints can label them and avoid re-typing? Default lean: no — a single-field URL is enough for MVP, and named profiles are a v2 candidate alongside import/export.

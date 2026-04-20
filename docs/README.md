@@ -8,7 +8,7 @@ This directory is the documentation home for `hermes-sidebar`, an open-source Ch
 
 | Document | What it covers | When to read it |
 | --- | --- | --- |
-| [product-design.md](./product-design.md) | Product positioning, scenarios, information architecture, screen and region design, conversation/session model **(including the full local session lifecycle in section 7.6)**, interaction with the Hermes API server, permissions and security, v1 scope and future evolution, UI copy examples, open questions | When you want to understand what the extension is for, how it should feel, and how it talks to Hermes |
+| [product-design.md](./product-design.md) | Product positioning, scenarios, information architecture, screen and region design, conversation/session model **(including the full local session lifecycle in section 7.6)**, interaction with the Hermes API server, permissions and security **(including connection scoping and connection-change behavior in section 9.6)**, v1 scope and future evolution, UI copy examples, open questions | When you want to understand what the extension is for, how it should feel, and how it talks to Hermes |
 
 ## Documents intentionally not yet written
 
@@ -23,7 +23,7 @@ The following documents will be added once the design in `product-design.md` is 
 
 1. Read sections 1, 2, and 3 of [product-design.md](./product-design.md) to confirm the goals and scope still match your expectations.
 2. Read section 7 — especially **7.6 Local session lifecycle** — to understand the rules a v1 implementation must obey for sessions, drafts, streaming, switching, and rename/delete. This is the part most likely to be misimplemented if skimmed.
-3. Read sections 8 and 9 to confirm the Hermes API integration assumptions and the local/remote connection model are sound for your deployment.
+3. Read sections 8 and 9 to confirm the Hermes API integration assumptions and the local/remote connection model are sound for your deployment. In particular, **section 9.6 Connection scoping and connection-change behavior** is the companion to 7.6: it defines how local sessions are scoped to a connection profile and what the panel does when the user changes the API base URL or API key. Skip it and it is easy to assume sessions are global across endpoints when they are not.
 4. Finish with section 12 (Open questions) — these are the items that must be resolved with maintainers before implementation begins.
 
 ## How to propose changes to the design
