@@ -15,8 +15,8 @@ Use this document as a **design contract for the eventual dev workflow**. When i
 Boundary notes:
 
 - Visual and interaction details live in [ui-spec.md](./ui-spec.md).
-- Request/response shapes, SSE event payloads, and error codes belong in `api-contract.md` (not yet written).
-- Internal module layout (side panel page, service worker, storage, API client) belongs in `architecture.md` (not yet written).
+- Request/response shapes, SSE event payloads, and error codes belong in [api-contract.md](./api-contract.md).
+- Internal module layout (side panel page, service worker, storage, API client) belongs in [architecture.md](./architecture.md).
 - Product rationale, permission model, and the local-vs-remote stance live in [product-design.md](./product-design.md) (sections 9.3 and 9.6 are especially relevant here).
 
 ---
