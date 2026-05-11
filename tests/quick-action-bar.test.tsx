@@ -3,14 +3,21 @@ import { describe, expect, it, vi } from "vitest";
 import { QuickActionBar } from "../src/sidepanel/components/QuickActionBar";
 
 describe("QuickActionBar", () => {
-  it("renders a summary action button and invokes the handler", () => {
-    const onSummarize = vi.fn();
+  it("renders both summary actions and invokes the correct handler", () => {
+    const onSummarizeSelection = vi.fn();
+    const onSummarizePageBody = vi.fn();
 
-    render(<QuickActionBar onSummarize={onSummarize} />);
+    render(
+      <QuickActionBar
+        onSummarizeSelection={onSummarizeSelection}
+        onSummarizePageBody={onSummarizePageBody}
+      />,
+    );
 
-    const button = screen.getByRole("button", { name: /总结/i });
-    fireEvent.click(button);
+    fireEvent.click(screen.getByRole("button", { name: /总结选区/i }));
+    fireEvent.click(screen.getByRole("button", { name: /总结正文/i }));
 
-    expect(onSummarize).toHaveBeenCalledTimes(1);
+    expect(onSummarizeSelection).toHaveBeenCalledTimes(1);
+    expect(onSummarizePageBody).toHaveBeenCalledTimes(1);
   });
 });
