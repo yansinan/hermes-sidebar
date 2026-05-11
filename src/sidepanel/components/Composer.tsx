@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { AppController, AppState } from "../../shared/app-state";
+import { buildSummaryPrompt } from "../../shared/prompt-templates";
+import { QuickActionBar } from "./QuickActionBar";
 
 interface Props {
   state: AppState;
@@ -37,6 +39,14 @@ export function Composer({ state, controller }: Props) {
   const onSend = () => {
     if (!canSend) return;
     void controller.send();
+  };
+
+  const onSummarize = () => {
+    if (draftInput.trim().length > 0) {
+      controller.setDraftInput(`${buildSummaryPrompt()}${draftInput}`);
+      return;
+    }
+    controller.setDraftInput(buildSummaryPrompt());
   };
 
   const onStop = () => {
@@ -113,6 +123,7 @@ export function Composer({ state, controller }: Props) {
 
   return (
     <footer className="composer" aria-label="Compose message">
+      <QuickActionBar onSummarize={onSummarize} />
       <textarea
         ref={textareaRef}
         className="composer__input"
