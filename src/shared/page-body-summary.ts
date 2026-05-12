@@ -1,32 +1,31 @@
+import { buildPageExtractionPrompt } from "./prompt-templates";
+
+/**
+ * Context for building a page extraction prompt
+ * Used when extracting full page content via Readability
+ */
 export interface PageBodySummaryContext {
   tabId?: number;
   title?: string;
   url?: string;
   bodyText?: string;
+  bodyHtml?: string; // Cleaned HTML structure for agent (preserves DOM hierarchy)
 }
 
-function pushLine(lines: string[], text: string | undefined): void {
-  if (!text) return;
-  const trimmed = text.trim();
-  if (!trimmed) return;
-  lines.push(trimmed);
-}
-
+/**
+ * Build a prompt for page content extraction and summarization
+ * This is the main prompt sent to the AI when user clicks "提取页面内容（Readability）"
+ * 
+ * @param context Page context including title, URL, and content (HTML or plain text)
+ * @returns Prompt string for the AI to summarize the page content
+ */
 export function buildPageBodySummaryPrompt(
   context: PageBodySummaryContext = {},
 ): string {
-  const lines: string[] = ["请用中文总结下面页面正文，给出 3 个要点："];
-
-  if (context.title || context.url) {
-    lines.push("", "页面信息：");
-    pushLine(lines, context.title ? `页面标题：${context.title}` : undefined);
-    pushLine(lines, context.url ? `页面链接：${context.url}` : undefined);
-  }
-
-  if (context.bodyText?.trim()) {
-    lines.push("", "页面正文：", context.bodyText.trim());
-  }
-
-  lines.push("", "请只总结页面正文本身，尽量不要依赖额外上下文。");
-  return lines.join("\n");
+  return buildPageExtractionPrompt({
+    title: context.title,
+    url: context.url,
+    bodyHtml: context.bodyHtml,
+    bodyText: context.bodyText,
+  });
 }

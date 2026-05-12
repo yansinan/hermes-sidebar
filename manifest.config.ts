@@ -8,7 +8,7 @@ export const manifest: ManifestV3 = {
   description: pkg.description,
   // Phase 1A/1B quick actions need an explicit active-tab/script path to read
   // the current page context. Keep the permissions narrow and user-triggered.
-  permissions: ["sidePanel", "storage", "tabs", "activeTab", "scripting"],
+  permissions: ["sidePanel", "storage", "tabs", "activeTab", "scripting", "contextMenus"],
   host_permissions: ["http://127.0.0.1:8642/*"],
   optional_host_permissions: ["http://*/*", "https://*/*"],
   side_panel: {

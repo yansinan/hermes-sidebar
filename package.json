@@ -6,13 +6,15 @@
   "description": "Chrome Side Panel extension for talking to a Hermes Agent API server.",
   "scripts": {
     "dev": "vite build --watch --mode development",
-    "build": "tsc -b && vite build",
+    "build:readability": "esbuild src/readability-bundle.ts --bundle --format=iife --global-name=Readability --outfile=public/readability.bundle.js --minify",
+    "build": "npm run build:readability && tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -b --noEmit"
   },
   "dependencies": {
+    "@mozilla/readability": "^0.6.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
@@ -24,6 +26,7 @@
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
+    "esbuild": "^0.28.0",
     "jsdom": "^25.0.1",
     "typescript": "^5.7.2",
     "vite": "^5.4.11",
