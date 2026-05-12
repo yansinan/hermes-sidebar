@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { AppController, AppState } from "../../shared/app-state";
+import { buildSummaryDraft } from "../../runtime/summary-action";
+import { buildPageBodySummaryDraft } from "../../runtime/page-body-summary-action";
+import { QuickActionBar } from "./QuickActionBar";
 
 interface Props {
   state: AppState;
@@ -37,6 +40,20 @@ export function Composer({ state, controller }: Props) {
   const onSend = () => {
     if (!canSend) return;
     void controller.send();
+  };
+
+  // Phase 1A: selection-aware quick summary. It keeps the original quick
+  // action lightweight and only adds current-tab metadata plus selection.
+  const onSummarizeSelection = async () => {
+    const nextDraft = await buildSummaryDraft(draftInput);
+    controller.setDraftInput(nextDraft);
+  };
+
+  // Phase 1B: page-body summary. This lives beside the quick summary button so
+  // tomorrow we can test both paths independently.
+  const onSummarizePageBody = async () => {
+    const nextDraft = await buildPageBodySummaryDraft(draftInput);
+    controller.setDraftInput(nextDraft);
   };
 
   const onStop = () => {
@@ -113,6 +130,10 @@ export function Composer({ state, controller }: Props) {
 
   return (
     <footer className="composer" aria-label="Compose message">
+      <QuickActionBar
+        onSummarizeSelection={() => void onSummarizeSelection()}
+        onSummarizePageBody={() => void onSummarizePageBody()}
+      />
       <textarea
         ref={textareaRef}
         className="composer__input"

@@ -22,6 +22,7 @@ export interface ToolProgressPayload {
 
 export interface StreamHandlers {
   onTextDelta?: (delta: string) => void;
+  onThinkingDelta?: (delta: string) => void;
   onToolProgress?: (payload: ToolProgressPayload) => void;
   /** Called once with the outcome when the stream ends for any reason. */
   onEnd?: (outcome: StreamOutcome) => void;
@@ -104,7 +105,15 @@ export async function consumeChatStream(
           continue;
         }
         const chunk = delta as {
-          choices?: { delta?: { content?: unknown }; finish_reason?: unknown }[];
+          choices?: {
+            delta?: {
+              content?: unknown;
+              reasoning?: unknown;
+              reasoning_content?: unknown;
+              thinking?: unknown;
+            };
+            finish_reason?: unknown;
+          }[];
           id?: unknown;
           // Some servers may expose the session id on each chunk; harmless to
           // capture when present.
@@ -113,6 +122,13 @@ export async function consumeChatStream(
         const contentRaw = chunk?.choices?.[0]?.delta?.content;
         if (typeof contentRaw === "string" && contentRaw.length > 0) {
           handlers.onTextDelta?.(contentRaw);
+        }
+        const thinkingRaw =
+          chunk?.choices?.[0]?.delta?.reasoning_content ??
+          chunk?.choices?.[0]?.delta?.reasoning ??
+          chunk?.choices?.[0]?.delta?.thinking;
+        if (typeof thinkingRaw === "string" && thinkingRaw.length > 0) {
+          handlers.onThinkingDelta?.(thinkingRaw);
         }
         if (!emittedRef && typeof chunk?.session_id === "string") {
           emittedRef = true;
