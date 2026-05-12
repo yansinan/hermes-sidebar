@@ -58,7 +58,7 @@ export function TopBar({
         title={`Built at ${BUILD_INFO.builtAt}`}
         aria-label={`Loaded build ${BUILD_INFO.label}`}
       >
-        {BUILD_INFO.label}
+        版本 {BUILD_INFO.sha}
       </span>
 
       <label className="model-dropdown" aria-label="Model">
