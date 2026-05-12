@@ -8,6 +8,7 @@
     "dev": "vite build --watch --mode development",
     "build:readability": "esbuild src/readability-bundle.ts --bundle --format=iife --global-name=Readability --outfile=public/readability.bundle.js --minify",
     "build": "npm run build:readability && tsc -b && vite build",
+    "release:github": "python3 scripts/release/publish_github_release.py",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
