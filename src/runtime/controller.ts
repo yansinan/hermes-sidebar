@@ -426,8 +426,14 @@ export class RealController implements AppController {
   }
 
   selectModel(modelId: string): void {
-    this.patch({ settings: { ...this.state.settings, defaultModelId: modelId } });
-    void this.gateway.saveSettings(this.state.settings);
+    console.log("[Controller] selectModel called with:", modelId);
+    const settings = { ...this.state.settings, defaultModelId: modelId };
+    console.log("[Controller] Updated settings:", settings);
+    this.patch({ settings });
+    console.log("[Controller] State patched, saving to storage...");
+    void this.gateway.saveSettings(settings).then(() => {
+      console.log("[Controller] Settings saved to storage");
+    });
   }
 
   async recheckHealth(): Promise<void> {
@@ -462,6 +468,37 @@ export class RealController implements AppController {
     this.patch({
       banners: this.state.banners.filter((b) => b.id !== bannerId),
     });
+  }
+
+  async addExtractionResult(
+    userMessage: UserMessage,
+    assistantMessage: AssistantMessage,
+  ): Promise<void> {
+    const now = Date.now();
+    let session = this.activeSession();
+    
+    if (!session) {
+      // Create a new session with the user message as first message
+      session = this.promoteDraft(userMessage.content, assistantMessage.modelId, now);
+    }
+
+    const modelId = assistantMessage.modelId || this.currentModelId() || session.modelId;
+    
+    // Add both user and assistant messages to the session
+    const updatedSession: Session = {
+      ...session,
+      updatedAt: now,
+      modelId,
+      messages: [...session.messages, userMessage, assistantMessage],
+    };
+    
+    this.putSession(updatedSession, { makeActive: true });
+    this.patch({ extractionPhase: "idle" });
+    await this.persist();
+  }
+
+  setExtractionPhase(phase?: "idle" | "extracting" | "processing"): void {
+    this.patch({ extractionPhase: phase });
   }
 
   // ---- Internals -------------------------------------------------------
@@ -536,6 +573,7 @@ export class RealController implements AppController {
 
   private async refreshConnection(): Promise<void> {
     const apiKey = this.state.settings.apiKey || undefined;
+    console.log("[Controller] refreshConnection: checking health...");
     this.patch({ connectionStatus: { kind: "connecting" } });
     const h = await this.api.checkHealth(apiKey);
     if (!h.ok) {
@@ -546,17 +584,21 @@ export class RealController implements AppController {
         reason,
         ...(h.error?.message ? { message: h.error.message } : {}),
       };
+      console.log("[Controller] Health check failed:", reason);
       this.patch({ connectionStatus: status });
       return;
     }
+    console.log("[Controller] Health check OK, fetching models...");
     this.patch({
       connectionStatus: { kind: "healthy", lastCheckedAt: Date.now() },
     });
     try {
       const ids = await this.api.listModels(apiKey);
+      console.log("[Controller] Models fetched:", ids);
       const models: ModelInfo[] = ids.map((id) => ({ id }));
       this.modelsByProfile.set(this.state.activeProfile.key, models);
       const nextSettings = this.maybeFallbackModel(models);
+      console.log("[Controller] After fallback, defaultModelId:", nextSettings.defaultModelId);
       this.patch({ models, settings: nextSettings });
       if (models.length === 0) {
         this.pushBanner({
@@ -567,6 +609,7 @@ export class RealController implements AppController {
     } catch (e) {
       // Model fetch failed separately from health — surface a banner.
       const err = e as ApiError;
+      console.error("[Controller] Failed to fetch models:", err);
       this.pushBanner({
         severity: "error",
         text: `Could not fetch models: ${err.message ?? err.kind}`,
@@ -627,6 +670,19 @@ export class RealController implements AppController {
         : {}),
     };
 
+    const notifyExtractionProcessing = async (statusText: string): Promise<void> => {
+      try {
+        await chrome.runtime.sendMessage({
+          type: "extraction-processing",
+          statusText,
+        });
+      } catch {
+        // best effort only
+      }
+    };
+
+    let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+
     try {
       if (!streaming) {
         const done = await this.api.completeOnce(req);
@@ -639,8 +695,24 @@ export class RealController implements AppController {
         return;
       }
 
+      let firstActivitySeen = false;
+      let heartbeatCount = 0;
+      const heartbeatIntervalMs = 15_000;
+      heartbeatTimer = setInterval(() => {
+        if (firstActivitySeen) return;
+        heartbeatCount += 1;
+        const elapsedSeconds = (heartbeatCount * heartbeatIntervalMs) / 1000;
+        const statusText =
+          elapsedSeconds < 60
+            ? `模型排队中，已等待 ${elapsedSeconds} 秒...`
+            : `模型排队中，已等待 ${Math.round(elapsedSeconds / 60)} 分钟...`;
+        void notifyExtractionProcessing(statusText);
+      }, heartbeatIntervalMs);
+
+      void notifyExtractionProcessing("请求已发送，等待模型响应...");
       const res = await this.api.openChatStream(req);
       this.setSessionPhase(sessionId, "streaming");
+      void notifyExtractionProcessing("正在接收模型流式响应...");
       // Capture any session ref off the response head.
       const headerRef = this.api.extractServerSessionRef(res);
       if (headerRef) this.attachServerSessionRef(sessionId, headerRef);
@@ -651,15 +723,36 @@ export class RealController implements AppController {
         res,
         {
           onTextDelta: (delta) => {
+            if (!firstActivitySeen) {
+              firstActivitySeen = true;
+              void notifyExtractionProcessing("模型已开始返回内容...");
+            }
             streamedContent += delta;
             this.appendStreamDelta(sessionId, assistantMessage.id, delta);
           },
+          onThinkingDelta: () => {
+            if (!firstActivitySeen) {
+              firstActivitySeen = true;
+              void notifyExtractionProcessing("模型正在思考...");
+              return;
+            }
+            void notifyExtractionProcessing("模型思考中...");
+          },
           onToolProgress: (p) => {
+            if (!firstActivitySeen) {
+              firstActivitySeen = true;
+            }
             toolProgress = this.applyToolProgress(toolProgress, p);
             this.setToolProgress(sessionId, assistantMessage.id, toolProgress);
+            void notifyExtractionProcessing(
+              p.status === "started"
+                ? `工具 ${p.tool} 调用中`
+                : `工具 ${p.tool} 已完成`,
+            );
           },
           onServerSessionRef: (ref) => this.attachServerSessionRef(sessionId, ref),
           onEnd: (outcome) => {
+            clearInterval(heartbeatTimer);
             if (outcome.kind === "ok") {
               this.finalizeStreamingMessage(sessionId, assistantMessage.id, {
                 content: streamedContent,
@@ -700,6 +793,7 @@ export class RealController implements AppController {
       );
       await this.persist();
     } catch (e) {
+      // If the stream never reached consumeChatStream, stop the heartbeat.
       const err = toApiErrorLike(e);
       if (err.kind === "stopped") {
         // Aborted by user; the stream handler also signals this path in the
@@ -718,6 +812,9 @@ export class RealController implements AppController {
       }
       await this.persist();
     } finally {
+      // If the request failed before onEnd ran, clear the heartbeat here too.
+      // Clearing an already-cleared interval is harmless.
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
       this.inFlight.delete(sessionId);
       this.setSessionPhase(sessionId, "idle");
     }

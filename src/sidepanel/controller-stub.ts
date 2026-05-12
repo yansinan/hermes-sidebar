@@ -571,6 +571,47 @@ export function createStubController(
     dismissBanner(bannerId) {
       patch({ banners: state.banners.filter((b) => b.id !== bannerId) });
     },
+
+    async addExtractionResult(userMessage, assistantMessage) {
+      const now = Date.now();
+      let activeSessionId = state.activeSessionId;
+      
+      if (!activeSessionId) {
+        // Create a new session
+        const session = {
+          id: randomId("s"),
+          profileKey: state.activeProfile.key,
+          title: userMessage.content.slice(0, 64),
+          createdAt: now,
+          updatedAt: now,
+          modelId: assistantMessage.modelId || pickModelId(),
+          messages: [userMessage, assistantMessage],
+        };
+        patch({
+          sessions: [...state.sessions, session],
+          activeSessionId: session.id,
+          extractionPhase: "idle",
+        });
+      } else {
+        // Add to existing session
+        const session = state.sessions.find((s) => s.id === activeSessionId);
+        if (session) {
+          const updated = {
+            ...session,
+            updatedAt: now,
+            messages: [...session.messages, userMessage, assistantMessage],
+          };
+          patch({
+            sessions: state.sessions.map((s) => (s.id === activeSessionId ? updated : s)),
+            extractionPhase: "idle",
+          });
+        }
+      }
+    },
+
+    setExtractionPhase(phase) {
+      patch({ extractionPhase: phase });
+    },
   };
 
   return stub;

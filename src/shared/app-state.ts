@@ -45,6 +45,8 @@ export interface AppState {
   draftInput: string;
   /** Stacked banners; UI renders at most two deep (docs/ui-spec.md §3.5). */
   banners: Banner[];
+  /** Extraction progress state: idle | extracting | processing */
+  extractionPhase?: "idle" | "extracting" | "processing";
 }
 
 /**
@@ -78,4 +80,10 @@ export interface AppController {
 
   // Banners
   dismissBanner(bannerId: string): void;
+
+  // Extraction result from service worker
+  addExtractionResult(userMessage: any, assistantMessage: any): Promise<void>;
+  
+  // Set extraction phase for UI feedback
+  setExtractionPhase(phase?: "idle" | "extracting" | "processing"): void;
 }

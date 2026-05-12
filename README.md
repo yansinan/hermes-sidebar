@@ -42,6 +42,33 @@ npm run build     # emits dist/ (load unpacked in chrome://extensions)
 npm test          # Vitest smoke suite
 ```
 
+## Publish a GitHub Release
+
+Release publishing is intentionally kept as one script under `scripts/release/`:
+
+- `scripts/release/publish_github_release.py`
+
+It uploads an existing ZIP package to a GitHub release using the GitHub API.
+
+```bash
+# 1) Build/package first (example file name)
+# hermes-sidebar-v0.1.0-20260512.zip
+
+# 2) Publish
+export GITHUB_TOKEN=your_token_here
+npm run release:github -- \
+	--repo yansinan/hermes-sidebar \
+	--tag v0.1.0-20260512 \
+	--asset hermes-sidebar-v0.1.0-20260512.zip \
+	--title "Token-based DOM Input Limit v0.1.0"
+```
+
+Optional:
+
+- `--notes-file <path>`: load release notes from a Markdown file.
+- `--draft`: create draft release.
+- `--prerelease`: create prerelease.
+
 ## Contributing
 
 With the scaffold in place, the most useful contributions right now are:

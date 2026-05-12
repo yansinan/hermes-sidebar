@@ -122,7 +122,14 @@ export function createStorageGateway(
     async loadSettings(): Promise<Settings> {
       const raw = await adapter.get<PersistedSettingsRecord>(SETTINGS_KEY);
       if (!raw || typeof raw !== "object") return { ...DEFAULT_SETTINGS };
-      return { ...DEFAULT_SETTINGS, ...raw.settings };
+      const merged = { ...DEFAULT_SETTINGS, ...raw.settings };
+      if (
+        typeof raw.settings.maxDomInputTokens !== "number" ||
+        raw.settings.maxDomInputTokens === 30_000
+      ) {
+        merged.maxDomInputTokens = DEFAULT_SETTINGS.maxDomInputTokens;
+      }
+      return merged;
     },
     async saveSettings(settings) {
       const rec: PersistedSettingsRecord = {
