@@ -1,4 +1,5 @@
 import type { AppController, AppState } from "../../shared/app-state";
+import { BUILD_INFO } from "../../shared/build-info";
 import { StatusDot } from "./StatusDot";
 
 interface Props {
@@ -51,6 +52,14 @@ export function TopBar({
       >
         <span className="profile-label__host">{activeProfile.hostShort}</span>
       </button>
+
+      <span
+        className="top-bar__build"
+        title={`Built at ${BUILD_INFO.builtAt}`}
+        aria-label={`Loaded build ${BUILD_INFO.label}`}
+      >
+        {BUILD_INFO.label}
+      </span>
 
       <label className="model-dropdown" aria-label="Model">
         <span className="visually-hidden">Model</span>

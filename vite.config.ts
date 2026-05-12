@@ -1,10 +1,33 @@
 /// <reference types="vitest" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { execSync } from "node:child_process";
 import { resolve } from "node:path";
 import { writeFileSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import type { Plugin } from "vite";
 import manifest from "./manifest.config";
+
+function resolveBuildInfo() {
+  let sha = "dev";
+  try {
+    sha = execSync("git rev-parse --short HEAD", {
+      cwd: __dirname,
+      stdio: ["ignore", "pipe", "ignore"],
+      encoding: "utf8",
+    }).trim();
+  } catch {
+    // Fallback to a stable label when git metadata is unavailable.
+  }
+
+  const builtAt = new Date().toISOString();
+  return {
+    sha,
+    builtAt,
+    label: `dist ${sha}`,
+  };
+}
+
+const buildInfo = resolveBuildInfo();
 
 function writeManifestPlugin(): Plugin {
   return {
@@ -41,6 +64,11 @@ function flattenSidepanelHtmlPlugin(): Plugin {
 }
 
 export default defineConfig({
+  define: {
+    __HERMES_BUILD_SHA__: JSON.stringify(buildInfo.sha),
+    __HERMES_BUILD_AT__: JSON.stringify(buildInfo.builtAt),
+    __HERMES_BUILD_LABEL__: JSON.stringify(buildInfo.label),
+  },
   plugins: [react(), flattenSidepanelHtmlPlugin(), writeManifestPlugin()],
   build: {
     outDir: "dist",
