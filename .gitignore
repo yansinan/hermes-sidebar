@@ -10,6 +10,7 @@ out/
 *.zip
 *.crx
 *.pem
+!releases/*.crx
 *.tsbuildinfo
 
 # Local env / secrets
