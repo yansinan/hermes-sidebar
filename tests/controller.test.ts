@@ -121,6 +121,47 @@ describe("controller send — non-streaming", () => {
     expect(user.badge?.kind).toBe("failed-to-send");
     expect(c.getState().banners.length).toBeGreaterThan(0);
   });
+
+  it("replaces {{markdown}} in API payload but preserves session user text", async () => {
+    let capturedBody = "";
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/v1/models")) {
+        return jsonResponse(200, { data: [{ id: "m1" }] });
+      }
+      if (url.endsWith("/v1/health") || url.endsWith("/health")) {
+        return jsonResponse(200, {});
+      }
+      if (url.endsWith("/v1/chat/completions")) {
+        capturedBody = String(init?.body ?? "");
+        return jsonResponse(200, {
+          choices: [{ message: { role: "assistant", content: "ok" } }],
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const c = await makeController(fetchImpl as unknown as ReturnType<typeof makeFetch>);
+    c.saveSettings({ streamingEnabled: false });
+
+    const s = c.getState();
+    s.markdownPreview = {
+      content: "# Auto Markdown",
+      collapsed: true,
+      status: "ready",
+    };
+
+    c.setDraftInput("请处理 {{markdown}}");
+    await c.send();
+
+    const parsed = JSON.parse(capturedBody) as { messages: Array<{ content: string }> };
+    const last = parsed.messages[parsed.messages.length - 1]?.content;
+    expect(last).toContain("# Auto Markdown");
+
+    const session = c.getState().sessions[0]!;
+    expect(session.messages[0]?.role).toBe("user");
+    expect((session.messages[0] as { content: string }).content).toBe("请处理 {{markdown}}");
+  });
 });
 
 describe("controller send — streaming", () => {

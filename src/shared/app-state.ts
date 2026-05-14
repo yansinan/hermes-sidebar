@@ -29,6 +29,22 @@ export interface Banner {
   dismissable: boolean;
 }
 
+export interface MarkdownPreviewState {
+  content: string;
+  title?: string;
+  sourceUrl?: string;
+  sourceTabId?: number;
+  collapsed: boolean;
+  status: "idle" | "loading" | "ready" | "error";
+  error?: string;
+  updatedAt?: number;
+}
+
+export interface ComposerSelectionState {
+  start: number;
+  end: number;
+}
+
 export interface AppState {
   settings: Settings;
   activeProfile: ConnectionProfile;
@@ -47,6 +63,10 @@ export interface AppState {
   banners: Banner[];
   /** Extraction progress state: idle | extracting | processing */
   extractionPhase?: "idle" | "extracting" | "processing";
+  /** Auto-generated markdown preview panel state. */
+  markdownPreview?: MarkdownPreviewState;
+  /** Current textarea selection/caret for token insertion. */
+  composerSelection?: ComposerSelectionState;
 }
 
 /**
@@ -86,4 +106,10 @@ export interface AppController {
   
   // Set extraction phase for UI feedback
   setExtractionPhase(phase?: "idle" | "extracting" | "processing"): void;
+
+  // Markdown preview and token insertion
+  refreshMarkdownPreview(): Promise<void>;
+  toggleMarkdownPreview(collapsed?: boolean): void;
+  insertMarkdownTokenAtCaret(token?: string): void;
+  setComposerSelection(start: number, end: number): void;
 }

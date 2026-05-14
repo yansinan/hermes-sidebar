@@ -58,6 +58,15 @@ export function initialStubState(settings: Settings = DEFAULT_SETTINGS): AppStat
     sessionPhases: {},
     draftInput: "",
     banners: [],
+    markdownPreview: {
+      content: "",
+      collapsed: true,
+      status: "idle",
+    },
+    composerSelection: {
+      start: 0,
+      end: 0,
+    },
   };
 }
 
@@ -138,6 +147,11 @@ export function createStubController(
     "Here's a simulated streamed reply from the stub controller.\n\n" +
     "```ts\nfunction greet(name: string) {\n  return `hello, ${name}`;\n}\n```\n\n" +
     "The real runtime will stream actual tokens from the Hermes API.";
+
+  const renderDraftWithTokens = (rawDraft: string): string => {
+    const markdown = state.markdownPreview?.content ?? "";
+    return rawDraft.replace(/\{\{\s*markdown\s*\}\}/gi, markdown);
+  };
 
   const simulateStream = (sessionId: string, assistantMessageId: string) => {
     const controller = new AbortController();
@@ -241,7 +255,8 @@ export function createStubController(
     },
 
     async send() {
-      const text = state.draftInput.trim();
+      const draft = state.draftInput.trim();
+      const text = renderDraftWithTokens(draft);
       if (!text) return;
       if (state.models.length === 0) return;
       if (state.connectionStatus.kind === "failed") return;
@@ -253,7 +268,7 @@ export function createStubController(
       const userMsg: UserMessage = {
         id: randomId("um"),
         role: "user",
-        content: text,
+        content: draft,
         createdAt: now,
         idempotencyKey: randomId("idem"),
       };
@@ -271,7 +286,7 @@ export function createStubController(
         const newSession: Session = {
           id: randomId("s"),
           profileKey: state.activeProfile.key,
-          title: text.slice(0, 48),
+          title: draft.slice(0, 48),
           createdAt: now,
           updatedAt: now,
           modelId: pickModelId(),
@@ -611,6 +626,57 @@ export function createStubController(
 
     setExtractionPhase(phase) {
       patch({ extractionPhase: phase });
+    },
+
+    async refreshMarkdownPreview() {
+      const now = Date.now();
+      patch({
+        markdownPreview: {
+          ...(state.markdownPreview ?? {
+            content: "",
+            collapsed: true,
+            status: "idle",
+          }),
+          status: "ready",
+          content:
+            state.markdownPreview?.content ||
+            "# Stub Markdown\n\nThis is a stub markdown preview. In runtime, this will auto-generate from page content.",
+          title: "Stub Page",
+          sourceUrl: "about:blank",
+          updatedAt: now,
+          error: undefined,
+        },
+      });
+    },
+
+    toggleMarkdownPreview(collapsed) {
+      const current = state.markdownPreview ?? {
+        content: "",
+        collapsed: true,
+        status: "idle" as const,
+      };
+      patch({
+        markdownPreview: {
+          ...current,
+          collapsed: typeof collapsed === "boolean" ? collapsed : !current.collapsed,
+        },
+      });
+    },
+
+    insertMarkdownTokenAtCaret(token = "{{markdown}}") {
+      const current = state.draftInput;
+      const start = state.composerSelection?.start ?? current.length;
+      const end = state.composerSelection?.end ?? start;
+      const next = current.slice(0, start) + token + current.slice(end);
+      const nextCaret = start + token.length;
+      patch({
+        draftInput: next,
+        composerSelection: { start: nextCaret, end: nextCaret },
+      });
+    },
+
+    setComposerSelection(start, end) {
+      patch({ composerSelection: { start, end } });
     },
   };
 

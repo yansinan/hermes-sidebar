@@ -66,4 +66,16 @@ describe("composer flow", () => {
     expect(screen.getByText(/4 chars/)).toBeInTheDocument();
     expect(screen.getByText(/Model:/)).toBeInTheDocument();
   });
+
+  it("inserts {{markdown}} at current caret position", async () => {
+    const controller = createStubController();
+    render(<App controller={controller} />);
+    await flushHealth();
+
+    controller.setDraftInput("abcd");
+    controller.setComposerSelection(2, 2);
+    controller.insertMarkdownTokenAtCaret();
+
+    expect(controller.getState().draftInput).toBe("ab{{markdown}}cd");
+  });
 });

@@ -130,6 +130,12 @@ button {
   position: relative;
 }
 
+.composer-stack {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 /* ---------- Top bar ---------- */
 
 .top-bar {
@@ -661,6 +667,104 @@ button {
 }
 
 /* ---------- Composer ---------- */
+
+.markdown-preview {
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-raised);
+  display: flex;
+  flex-direction: column;
+  max-height: 46vh;
+}
+
+.markdown-preview--collapsed {
+  max-height: 34px;
+  overflow: hidden;
+}
+
+.markdown-preview__head {
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: linear-gradient(90deg, var(--accent-soft), transparent);
+  color: var(--fg);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.markdown-preview__head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.markdown-preview__title {
+  font-weight: 600;
+}
+
+.markdown-preview__meta {
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.markdown-preview__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-subtle);
+}
+
+.markdown-preview__source {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  font-size: 11.5px;
+}
+
+.markdown-preview__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.markdown-preview__actions button {
+  border: 1px solid var(--border);
+  background: var(--bg-raised);
+  color: var(--fg);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.markdown-preview__actions button:hover {
+  border-color: var(--accent);
+}
+
+.markdown-preview__body {
+  overflow: auto;
+  padding: 8px 10px;
+  min-height: 80px;
+}
+
+.markdown-preview__status {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.markdown-preview__status--error {
+  color: var(--danger);
+}
 
 .composer {
   border-top: 1px solid var(--border);

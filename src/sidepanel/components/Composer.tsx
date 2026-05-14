@@ -37,6 +37,23 @@ export function Composer({ state, controller }: Props) {
     el.style.height = `${el.scrollHeight}px`;
   }, [draftInput]);
 
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    const selection = state.composerSelection;
+    if (!selection) return;
+    if (document.activeElement !== el) return;
+    const start = Math.min(selection.start, draftInput.length);
+    const end = Math.min(selection.end, draftInput.length);
+    requestAnimationFrame(() => {
+      try {
+        el.setSelectionRange(start, end);
+      } catch {
+        // noop in environments where selection APIs are restricted
+      }
+    });
+  }, [draftInput, state.composerSelection]);
+
   const onSend = () => {
     if (!canSend) return;
     void controller.send();
@@ -106,6 +123,10 @@ export function Composer({ state, controller }: Props) {
     }
   };
 
+  const syncSelection = (el: HTMLTextAreaElement) => {
+    controller.setComposerSelection(el.selectionStart ?? 0, el.selectionEnd ?? 0);
+  };
+
   // Placeholder stays constant; the disabled reason is surfaced via tooltip/title
   // per ui-spec §4.1 ("shows the same placeholder" + tooltip explains blocker).
   const disabledReason = connectionFailed
@@ -143,6 +164,9 @@ export function Composer({ state, controller }: Props) {
         onKeyDown={onKeyDown}
         onPaste={onPaste}
         onDrop={onDrop}
+        onSelect={(e) => syncSelection(e.currentTarget)}
+        onClick={(e) => syncSelection(e.currentTarget)}
+        onKeyUp={(e) => syncSelection(e.currentTarget)}
         onCompositionStart={() => setComposing(true)}
         onCompositionEnd={() => setComposing(false)}
         rows={2}

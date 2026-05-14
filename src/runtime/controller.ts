@@ -38,6 +38,8 @@ import {
   type StorageGateway,
 } from "../storage/gateway";
 import { normalizeBaseUrl, toProfile } from "./profile";
+import { extractPageMainContent } from "../shared/page-extractor";
+import { htmlToMarkdown } from "../shared/markdown-converter";
 
 export interface BuildControllerOptions {
   gateway?: StorageGateway;
@@ -112,6 +114,12 @@ export class RealController implements AppController {
       sessionPhases: {},
       draftInput: "",
       banners: [],
+      markdownPreview: {
+        content: "",
+        collapsed: true,
+        status: "idle",
+      },
+      composerSelection: { start: 0, end: 0 },
     };
   }
 
@@ -149,9 +157,12 @@ export class RealController implements AppController {
       models: [],
       banners: [],
       connectionStatus: { kind: "unknown" },
+      markdownPreview: this.state.markdownPreview,
+      composerSelection: this.state.composerSelection,
     });
 
     await this.refreshConnection();
+    await this.refreshMarkdownPreview();
   }
 
   // ---- AppController surface -------------------------------------------
@@ -406,6 +417,8 @@ export class RealController implements AppController {
         models: this.modelsByProfile.get(newProfile.key) ?? [],
         connectionStatus: { kind: "unknown" },
         banners: [],
+        markdownPreview: this.state.markdownPreview,
+        composerSelection: this.state.composerSelection,
       });
       void this.refreshConnection();
       return;
@@ -499,6 +512,97 @@ export class RealController implements AppController {
 
   setExtractionPhase(phase?: "idle" | "extracting" | "processing"): void {
     this.patch({ extractionPhase: phase });
+  }
+
+  async refreshMarkdownPreview(): Promise<void> {
+    const tabsApi = (globalThis as { chrome?: typeof chrome }).chrome?.tabs;
+    if (!tabsApi?.query) return;
+
+    const current = this.state.markdownPreview ?? {
+      content: "",
+      collapsed: true,
+      status: "idle" as const,
+    };
+    this.patch({
+      markdownPreview: {
+        ...current,
+        status: "loading",
+        error: undefined,
+      },
+    });
+
+    try {
+      const [tab] = await tabsApi.query({ active: true, currentWindow: true });
+      const tabId = tab?.id;
+      if (typeof tabId !== "number") {
+        this.patch({
+          markdownPreview: {
+            ...current,
+            status: "error",
+            error: "No active tab available for extraction",
+          },
+        });
+        return;
+      }
+
+      const parsed = await extractPageMainContent(tabId, { useReadability: true });
+      const markdown =
+        htmlToMarkdown(parsed.html ?? parsed.content ?? "") ||
+        (parsed.text ?? "").trim();
+
+      this.patch({
+        markdownPreview: {
+          content: markdown,
+          title: parsed.title ?? tab?.title ?? "Untitled",
+          sourceUrl: tab?.url,
+          sourceTabId: tabId,
+          collapsed: current.collapsed ?? true,
+          status: markdown ? "ready" : "error",
+          ...(markdown
+            ? { updatedAt: Date.now(), error: undefined }
+            : { error: parsed.error ?? "Markdown extraction returned empty content" }),
+        },
+      });
+    } catch (error) {
+      this.patch({
+        markdownPreview: {
+          ...current,
+          status: "error",
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }
+
+  toggleMarkdownPreview(collapsed?: boolean): void {
+    const current = this.state.markdownPreview ?? {
+      content: "",
+      collapsed: true,
+      status: "idle" as const,
+    };
+    this.patch({
+      markdownPreview: {
+        ...current,
+        collapsed: typeof collapsed === "boolean" ? collapsed : !current.collapsed,
+      },
+    });
+  }
+
+  insertMarkdownTokenAtCaret(token = "{{markdown}}"): void {
+    const draft = this.state.draftInput;
+    const start = this.state.composerSelection?.start ?? draft.length;
+    const end = this.state.composerSelection?.end ?? start;
+    const next = draft.slice(0, start) + token + draft.slice(end);
+    const caret = start + token.length;
+    this.drafts.set(this.state.activeProfile.key, next);
+    this.patch({
+      draftInput: next,
+      composerSelection: { start: caret, end: caret },
+    });
+  }
+
+  setComposerSelection(start: number, end: number): void {
+    this.patch({ composerSelection: { start, end } });
   }
 
   // ---- Internals -------------------------------------------------------
@@ -652,9 +756,10 @@ export class RealController implements AppController {
 
     const apiKey = this.state.settings.apiKey || undefined;
     const streaming = this.state.settings.streamingEnabled;
-    const wireMessages = toWireMessages(
-      session.messages.filter((m) => m.id !== assistantMessage.id),
-    );
+    const renderedMessages = session.messages
+      .filter((m) => m.id !== assistantMessage.id)
+      .map((m) => ({ ...m, content: this.renderTemplateVariables(m.content) }));
+    const wireMessages = toWireMessages(renderedMessages);
 
     const req: ChatCompletionsRequest = {
       model: assistantMessage.modelId,
@@ -966,6 +1071,14 @@ export class RealController implements AppController {
   private patch(next: Partial<AppState>): void {
     this.state = { ...this.state, ...next };
     for (const l of this.listeners) l(this.state);
+  }
+
+  private renderTemplateVariables(input: string): string {
+    const markdown = this.state.markdownPreview?.content ?? "";
+    return input.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (match, key) => {
+      if (key === "markdown") return markdown;
+      return match;
+    });
   }
 }
 

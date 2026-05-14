@@ -3,6 +3,7 @@ import type { AppController } from "../shared/app-state";
 import { TopBar } from "./components/TopBar";
 import { ConversationArea } from "./components/ConversationArea";
 import { Composer } from "./components/Composer";
+import { MarkdownPreviewPanel } from "./components/MarkdownPreviewPanel";
 import { SessionDrawer } from "./components/SessionDrawer";
 import { SettingsDrawer } from "./components/SettingsDrawer";
 import { useAppState } from "./useAppState";
@@ -115,6 +116,38 @@ export function App({ controller }: Props) {
     };
   }, [controller]);
 
+  useEffect(() => {
+    void controller.refreshMarkdownPreview();
+
+    const tabsApi = (globalThis as { chrome?: typeof chrome }).chrome?.tabs;
+    if (!tabsApi?.onUpdated || !tabsApi?.onActivated) return;
+
+    let lastRefreshAt = 0;
+    const refreshWithThrottle = () => {
+      const now = Date.now();
+      if (now - lastRefreshAt < 800) return;
+      lastRefreshAt = now;
+      void controller.refreshMarkdownPreview();
+    };
+
+    const onUpdated = (
+      _tabId: number,
+      changeInfo: chrome.tabs.TabChangeInfo,
+      tab: chrome.tabs.Tab,
+    ) => {
+      if (changeInfo.status === "complete" && tab.active) refreshWithThrottle();
+    };
+    const onActivated = () => refreshWithThrottle();
+
+    tabsApi.onUpdated.addListener(onUpdated);
+    tabsApi.onActivated.addListener(onActivated);
+
+    return () => {
+      tabsApi.onUpdated.removeListener(onUpdated);
+      tabsApi.onActivated.removeListener(onActivated);
+    };
+  }, [controller]);
+
   return (
     <div className="app-shell">
       <TopBar
@@ -152,7 +185,15 @@ export function App({ controller }: Props) {
           {extractionStatusText || (state.extractionPhase === "extracting" ? "提取页面内容中..." : "处理中...")}
         </div>
       )}
-      <Composer state={state} controller={controller} />
+      <div className="composer-stack">
+        <MarkdownPreviewPanel
+          preview={state.markdownPreview}
+          onToggle={() => controller.toggleMarkdownPreview()}
+          onRefresh={() => void controller.refreshMarkdownPreview()}
+          onInsertToken={() => controller.insertMarkdownTokenAtCaret("{{markdown}}")}
+        />
+        <Composer state={state} controller={controller} />
+      </div>
 
       {overlay === "sessions" && (
         <SessionDrawer
