@@ -126,6 +126,8 @@ button {
   display: grid;
   grid-template-rows: auto 1fr auto;
   height: 100%;
+  width: 100%;
+  overflow-x: hidden;
   background: var(--bg);
   position: relative;
 }
@@ -134,6 +136,8 @@ button {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
+  overflow-x: hidden;
 }
 
 /* ---------- Top bar ---------- */
@@ -575,10 +579,42 @@ button {
 .md-code-block pre {
   margin: 0;
   padding: 8px 10px;
+  max-width: 100%;
   overflow-x: auto;
   font-family: var(--font-mono);
   font-size: 12.5px;
+  word-break: normal;
+  overflow-wrap: normal;
+  white-space: pre;
 }
+.md-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 6px 0;
+}
+.md-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.md-table th,
+.md-table td {
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.md-table th {
+  background: var(--bg-subtle);
+  font-weight: 600;
+  text-align: left;
+}
+.md-table tr:nth-child(even) td {
+  background: var(--bg-subtle);
+}
+
 .md-caret {
   display: inline-block;
   width: 2px;
@@ -674,6 +710,7 @@ button {
   background: var(--bg-raised);
   display: flex;
   flex-direction: column;
+  min-width: 0;
   max-height: 46vh;
 }
 
@@ -750,10 +787,20 @@ button {
   border-color: var(--accent);
 }
 
+.markdown-preview__actions .markdown-preview__view-toggle--active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
 .markdown-preview__body {
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 8px 10px;
   min-height: 80px;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  scrollbar-gutter: stable;
 }
 
 .markdown-preview__status {
@@ -764,6 +811,15 @@ button {
 
 .markdown-preview__status--error {
   color: var(--danger);
+}
+
+.markdown-preview__raw {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .composer {

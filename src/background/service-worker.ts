@@ -226,14 +226,14 @@ async function ensureContextMenu(): Promise<void> {
     chrome.contextMenus.create({
       id: "hermes_send_llm_wiki_page",
       parentId: "hermes_send_root",
-      title: "收到llm-wiki",
-      contexts: ["page", "selection"],
+      title: "整页",
+      contexts: ["page"],
     });
 
     chrome.contextMenus.create({
       id: "hermes_send_llm_wiki_selection",
       parentId: "hermes_send_root",
-      title: "选中内容到LLM-Wiki",
+      title: "所选内容",
       contexts: ["selection"],
     });
 
@@ -481,7 +481,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   }
 
   if (menuItemId === "hermes_send_llm_wiki_selection") {
-    logInfo("Context menu clicked: 选中内容到LLM-Wiki");
+    logInfo("Context menu clicked: 所选内容");
     try {
       const selectionFallback = (info.selectionText ?? "").trim();
       const selected = await extractSelectionDom(tabId, selectionFallback);
@@ -491,22 +491,22 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         url: tab?.url ?? undefined,
         domHtml: selected.html,
         text: selected.text,
-        menuTitle: "选中内容到LLM-Wiki",
+        menuTitle: "所选内容",
       });
 
       const validation = validateLlmWikiPromptLength({
         settings,
         domHtml: selected.html,
         prompt,
-        modeLabel: "选中内容到LLM-Wiki",
+        modeLabel: "所选内容",
       });
       if (!validation.ok) {
-        logWarn("LLM-wiki selection blocked by guard:", validation.reason);
+        logWarn("Selection send blocked by guard:", validation.reason);
         await notifyUiError(validation.reason);
         return;
       }
 
-      logInfo("LLM-wiki prompt built:", {
+      logInfo("Selection prompt built:", {
         promptLength: prompt.length,
         htmlLength: selected.html.length,
         textLength: selected.text.length,
@@ -514,17 +514,17 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       });
 
       await runPromptWorkflow(prompt, settings);
-      logInfo("✓ 选中内容到LLM-Wiki workflow complete");
+      logInfo("✓ 所选内容 workflow complete");
     } catch (e) {
       const errorMsg = e instanceof Error ? e.message : String(e);
-      logError("✗ 选中内容到LLM-Wiki workflow failed:", e);
-      await notifyUiError(`LLM-wiki 素材创建失败: ${errorMsg}`);
+      logError("✗ 所选内容 workflow failed:", e);
+      await notifyUiError(`所选内容发送失败: ${errorMsg}`);
     }
     return;
   }
 
   if (menuItemId === "hermes_send_llm_wiki_page") {
-    logInfo("Context menu clicked: 收到llm-wiki");
+    logInfo("Context menu clicked: 整页");
     try {
       await notifyUiProcessing("正在提取页面 DOM 主体...");
       const parsed = await extractPageMainContent(tabId, { useReadability: true });
@@ -541,7 +541,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         url: tab?.url ?? undefined,
         domHtml: parsed.html,
         text: parsed.text,
-        menuTitle: "收到llm-wiki",
+        menuTitle: "整页",
       });
 
       await notifyUiProcessing("已提取 DOM，正在构建请求...");
@@ -550,15 +550,15 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         settings,
         domHtml: parsed.html ?? "",
         prompt,
-        modeLabel: "收到llm-wiki",
+        modeLabel: "整页",
       });
       if (!validation.ok) {
-        logWarn("Full-page LLM-wiki blocked by guard:", validation.reason);
+        logWarn("Full-page send blocked by guard:", validation.reason);
         await notifyUiError(validation.reason);
         return;
       }
 
-      logInfo("Full-page LLM-wiki prompt built:", {
+      logInfo("Full-page prompt built:", {
         promptLength: prompt.length,
         htmlLength: parsed.html?.length ?? 0,
         textLength: parsed.text?.length ?? 0,
@@ -566,11 +566,11 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       });
 
       await runPromptWorkflow(prompt, settings);
-      logInfo("✓ 收到llm-wiki workflow complete");
+      logInfo("✓ 整页 workflow complete");
     } catch (e) {
       const errorMsg = e instanceof Error ? e.message : String(e);
-      logError("✗ 收到llm-wiki workflow failed:", e);
-      await notifyUiError(`LLM-wiki 全页素材创建失败: ${errorMsg}`);
+      logError("✗ 整页 workflow failed:", e);
+      await notifyUiError(`整页内容发送失败: ${errorMsg}`);
     }
     return;
   }

@@ -104,6 +104,8 @@ export interface Settings {
   customContextMenuItems: CustomContextMenuItem[];
   /** Max DOM payload size allowed for menu-driven DOM sends (in tokens). */
   maxDomInputTokens: number;
+  /** Emit structured debug trace for full-page capture block matching. */
+  debugPageCaptureTrace: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -123,4 +125,5 @@ export const DEFAULT_SETTINGS: Settings = {
   customContextMenuItems: [],
   // 60k tokens ~= 240k chars with current rough conversion.
   maxDomInputTokens: 60_000,
+  debugPageCaptureTrace: false,
 };

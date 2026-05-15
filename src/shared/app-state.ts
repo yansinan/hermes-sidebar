@@ -38,6 +38,8 @@ export interface MarkdownPreviewState {
   status: "idle" | "loading" | "ready" | "error";
   error?: string;
   updatedAt?: number;
+  /** How the current content was captured: full-page extraction vs user text selection. */
+  captureSource?: "page" | "selection";
 }
 
 export interface ComposerSelectionState {
@@ -112,4 +114,8 @@ export interface AppController {
   toggleMarkdownPreview(collapsed?: boolean): void;
   insertMarkdownTokenAtCaret(token?: string): void;
   setComposerSelection(start: number, end: number): void;
+  /** Convert selected HTML from the active page to Markdown and show in the preview panel. */
+  captureSelectionMarkdown(html: string, tabId: number, preConvertedMarkdown?: string): Promise<void>;
+  /** Revert the preview panel to the last full-page capture (called when selection is cleared). */
+  revertToPageCapture(): void;
 }

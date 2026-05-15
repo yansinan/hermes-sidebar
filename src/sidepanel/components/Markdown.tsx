@@ -1,16 +1,23 @@
-import { useState } from "react";
+import { useState, type ComponentType, type ReactNode } from "react";
 
-// Minimal markdown-ish renderer (docs/ui-spec.md §3.2).
-// v1 scope: paragraphs, headings (h1–h4; h5/h6 fold to h4), ordered/unordered
-// lists, blockquotes, fenced code blocks with a copy button, inline code,
-// bold, italic, and links. Heavy deps are avoided intentionally — a future
-// maintainer can swap this for `marked` / `markdown-it` if scope grows.
+// Markdown renderer (docs/ui-spec.md §3.2).
+// Uses a maintained parser to avoid edge-case hangs from hand-rolled regex parsing.
 
 interface Props {
   text: string;
   /** When true, renders a blinking caret after the content (streaming cue). */
   streaming?: boolean;
 }
+
+type ChildProps = { children?: ReactNode };
+type LinkProps = { href?: string; children?: ReactNode };
+type ImageProps = { src?: string; alt?: string };
+type CodeProps = { className?: string; children?: ReactNode };
+
+type MarkdownBundle = {
+  ReactMarkdown?: ComponentType<any>;
+  remarkGfm?: unknown;
+};
 
 interface TextSegment {
   kind: "text";
@@ -22,6 +29,41 @@ interface CodeSegment {
   value: string;
 }
 type Segment = TextSegment | CodeSegment;
+
+type Block =
+  | { kind: "p"; lines: string[] }
+  | { kind: "h"; level: 1 | 2 | 3 | 4; text: string }
+  | { kind: "ul"; items: string[] }
+  | { kind: "ol"; items: string[] }
+  | { kind: "blockquote"; lines: string[] }
+  | {
+      kind: "table";
+      head: string[];
+      align: Array<"left" | "center" | "right" | null>;
+      rows: string[][];
+    };
+
+const MAX_RENDER_CHARS = 300_000;
+const MAX_INLINE_LINE_CHARS = 40_000;
+const MAX_URL_DISPLAY_CHARS = 100;
+
+function getMarkdownBundle(): MarkdownBundle {
+  return ((globalThis as any).__hermesMarkdown ?? {}) as MarkdownBundle;
+}
+
+function isTrackingImageUrl(raw: string): boolean {
+  try {
+    const u = new URL(raw);
+    return /(^|\.)bat\.bing\.com$/i.test(u.hostname) && u.pathname.startsWith("/action/");
+  } catch {
+    return false;
+  }
+}
+
+function normalizeInput(text: string): string {
+  if (text.length <= MAX_RENDER_CHARS) return text;
+  return `${text.slice(0, MAX_RENDER_CHARS)}\n\n[truncated for preview]`;
+}
 
 function splitFencedCode(input: string): Segment[] {
   const result: Segment[] = [];
@@ -41,87 +83,144 @@ function splitFencedCode(input: string): Segment[] {
   return result;
 }
 
-function renderInline(text: string): React.ReactNode[] {
-  const nodes: React.ReactNode[] = [];
+function clampText(input: string, max: number): string {
+  if (input.length <= max) return input;
+  return `${input.slice(0, max)}...`;
+}
+
+function displayUrl(raw: string): string {
+  return clampText(raw, MAX_URL_DISPLAY_CHARS);
+}
+
+function parseCodeSpan(text: string, start: number): { value: string; next: number } | null {
+  if (text[start] !== "`") return null;
+  const end = text.indexOf("`", start + 1);
+  if (end <= start + 1) return null;
+  const value = text.slice(start + 1, end);
+  if (value.includes("\n")) return null;
+  return { value, next: end + 1 };
+}
+
+function parseBold(text: string, start: number): { value: string; next: number } | null {
+  if (!text.startsWith("**", start)) return null;
+  const end = text.indexOf("**", start + 2);
+  if (end <= start + 2) return null;
+  const value = text.slice(start + 2, end);
+  if (value.includes("\n")) return null;
+  return { value, next: end + 2 };
+}
+
+function parseItalic(text: string, start: number): { value: string; next: number } | null {
+  if (text[start] !== "*" || text.startsWith("**", start)) return null;
+  const end = text.indexOf("*", start + 1);
+  if (end <= start + 1) return null;
+  const value = text.slice(start + 1, end);
+  if (value.includes("\n")) return null;
+  return { value, next: end + 1 };
+}
+
+function parseBracketParen(text: string, start: number): { label: string; url: string; next: number } | null {
+  if (text[start] !== "[") return null;
+  const closeBracket = text.indexOf("]", start + 1);
+  if (closeBracket < 0 || closeBracket + 1 >= text.length || text[closeBracket + 1] !== "(") {
+    return null;
+  }
+  const closeParen = text.indexOf(")", closeBracket + 2);
+  if (closeParen < 0) return null;
+
+  const label = text.slice(start + 1, closeBracket);
+  const url = text.slice(closeBracket + 2, closeParen).trim();
+  if (!/^https?:\/\//i.test(url)) return null;
+  return {
+    label,
+    url,
+    next: closeParen + 1,
+  };
+}
+
+function renderInline(text: string): ReactNode[] {
+  const input = clampText(text, MAX_INLINE_LINE_CHARS);
+  const nodes: ReactNode[] = [];
   let i = 0;
   let keyCounter = 0;
-  const push = (node: React.ReactNode) => nodes.push(node);
+  const push = (node: ReactNode) => nodes.push(node);
 
-  const inlineRe =
-    /(`([^`\n]+)`)|(\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\))|(\*\*([^*\n]+)\*\*)|(\*([^*\n]+)\*)/g;
-
-  let match: RegExpExecArray | null;
-  while ((match = inlineRe.exec(text)) !== null) {
-    if (match.index > i) {
-      push(text.slice(i, match.index));
-    }
-    if (match[1]) {
+  while (i < input.length) {
+    const code = parseCodeSpan(input, i);
+    if (code) {
       push(
         <code key={`c-${keyCounter++}`} className="md-code-inline">
-          {match[2]}
+          {code.value}
         </code>,
       );
-    } else if (match[3]) {
+      i = code.next;
+      continue;
+    }
+
+    if (input[i] === "!" && input[i + 1] === "[") {
+      const image = parseBracketParen(input, i + 1);
+      if (image) {
+        if (!isTrackingImageUrl(image.url)) {
+          push(
+            <a
+              key={`img-${keyCounter++}`}
+              href={image.url}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {image.label.trim() || displayUrl(image.url)}
+            </a>,
+          );
+        }
+        i = image.next;
+        continue;
+      }
+    }
+
+    const link = parseBracketParen(input, i);
+    if (link) {
       push(
         <a
           key={`a-${keyCounter++}`}
-          href={match[5]}
+          href={link.url}
           target="_blank"
           rel="noopener noreferrer"
         >
-          {match[4]}
+          {link.label.trim() || displayUrl(link.url)}
         </a>,
       );
-    } else if (match[6]) {
-      push(<strong key={`b-${keyCounter++}`}>{match[7]}</strong>);
-    } else if (match[8]) {
-      push(<em key={`i-${keyCounter++}`}>{match[9]}</em>);
+      i = link.next;
+      continue;
     }
-    i = inlineRe.lastIndex;
+
+    const bold = parseBold(input, i);
+    if (bold) {
+      push(<strong key={`b-${keyCounter++}`}>{bold.value}</strong>);
+      i = bold.next;
+      continue;
+    }
+
+    const italic = parseItalic(input, i);
+    if (italic) {
+      push(<em key={`i-${keyCounter++}`}>{italic.value}</em>);
+      i = italic.next;
+      continue;
+    }
+
+    let next = i + 1;
+    while (next < input.length) {
+      const ch = input[next];
+      if (ch === "`" || ch === "[" || ch === "*" || (ch === "!" && input[next + 1] === "[")) {
+        break;
+      }
+      next++;
+    }
+    push(input.slice(i, next));
+    i = next;
   }
-  if (i < text.length) {
-    push(text.slice(i));
-  }
+
   return nodes;
 }
-
-function CodeBlock({ lang, value }: { lang: string; value: string }) {
-  const [copied, setCopied] = useState(false);
-  const onCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // Clipboard blocked — surface nothing; user can still select manually.
-    }
-  };
-  return (
-    <div className="md-code-block">
-      <div className="md-code-block__header">
-        <span className="md-code-block__lang">{lang || "code"}</span>
-        <button
-          type="button"
-          className="md-code-block__copy"
-          onClick={onCopy}
-          aria-label={copied ? "Copied" : "Copy code"}
-        >
-          {copied ? "Copied" : "Copy"}
-        </button>
-      </div>
-      <pre>
-        <code>{value}</code>
-      </pre>
-    </div>
-  );
-}
-
-type Block =
-  | { kind: "p"; lines: string[] }
-  | { kind: "h"; level: 1 | 2 | 3 | 4; text: string }
-  | { kind: "ul"; items: string[] }
-  | { kind: "ol"; items: string[] }
-  | { kind: "blockquote"; lines: string[] };
 
 function parseBlocks(text: string): Block[] {
   const blocks: Block[] = [];
@@ -136,7 +235,28 @@ function parseBlocks(text: string): Block[] {
       continue;
     }
 
-    // Heading
+    if (/^\|.+\|/.test(line) && i + 1 < lines.length && /^\|[\s|:-]+\|/.test(lines[i + 1])) {
+      const parseCells = (row: string) =>
+        row.replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+      const parseAlign = (sep: string): Array<"left" | "center" | "right" | null> =>
+        parseCells(sep).map((c) => {
+          if (/^:-+:$/.test(c)) return "center";
+          if (/^-+:$/.test(c)) return "right";
+          if (/^:-+$/.test(c)) return "left";
+          return null;
+        });
+      const head = parseCells(line);
+      const align = parseAlign(lines[i + 1]);
+      i += 2;
+      const rows: string[][] = [];
+      while (i < lines.length && /^\|.+\|/.test(lines[i])) {
+        rows.push(parseCells(lines[i]));
+        i++;
+      }
+      blocks.push({ kind: "table", head, align, rows });
+      continue;
+    }
+
     const h = /^(#{1,6})\s+(.*)$/.exec(line);
     if (h) {
       const rawLevel = h[1].length;
@@ -146,7 +266,6 @@ function parseBlocks(text: string): Block[] {
       continue;
     }
 
-    // Unordered list
     if (/^\s*[-*+]\s+/.test(line)) {
       const items: string[] = [];
       while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
@@ -157,7 +276,6 @@ function parseBlocks(text: string): Block[] {
       continue;
     }
 
-    // Ordered list
     if (/^\s*\d+[.)]\s+/.test(line)) {
       const items: string[] = [];
       while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])) {
@@ -168,7 +286,6 @@ function parseBlocks(text: string): Block[] {
       continue;
     }
 
-    // Blockquote
     if (/^\s*>\s?/.test(line)) {
       const quoteLines: string[] = [];
       while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
@@ -179,7 +296,6 @@ function parseBlocks(text: string): Block[] {
       continue;
     }
 
-    // Paragraph (consume contiguous non-blank, non-special lines)
     const paraLines: string[] = [];
     while (i < lines.length) {
       const l = lines[i];
@@ -202,7 +318,7 @@ function parseBlocks(text: string): Block[] {
   return blocks;
 }
 
-function renderBlocks(text: string, keyPrefix: string): React.ReactNode[] {
+function renderBlocks(text: string, keyPrefix: string): ReactNode[] {
   const blocks = parseBlocks(text);
   return blocks.map((b, idx) => {
     const key = `${keyPrefix}-b${idx}`;
@@ -244,7 +360,34 @@ function renderBlocks(text: string, keyPrefix: string): React.ReactNode[] {
         </blockquote>
       );
     }
-    // Paragraph
+    if (b.kind === "table") {
+      return (
+        <div key={key} className="md-table-wrap">
+          <table className="md-table">
+            <thead>
+              <tr>
+                {b.head.map((cell, j) => (
+                  <th key={j} style={b.align[j] ? { textAlign: b.align[j]! } : undefined}>
+                    {renderInline(cell)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {b.rows.map((row, ri) => (
+                <tr key={ri}>
+                  {row.map((cell, j) => (
+                    <td key={j} style={b.align[j] ? { textAlign: b.align[j]! } : undefined}>
+                      {renderInline(cell)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
     return (
       <p key={key} className="md-p">
         {b.lines.map((l, j) => (
@@ -258,17 +401,107 @@ function renderBlocks(text: string, keyPrefix: string): React.ReactNode[] {
   });
 }
 
+function CodeBlock({ lang, value }: { lang: string; value: string }) {
+  const [copied, setCopied] = useState(false);
+  const onCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard blocked — surface nothing; user can still select manually.
+    }
+  };
+  return (
+    <div className="md-code-block">
+      <div className="md-code-block__header">
+        <span className="md-code-block__lang">{lang || "code"}</span>
+        <button
+          type="button"
+          className="md-code-block__copy"
+          onClick={onCopy}
+          aria-label={copied ? "Copied" : "Copy code"}
+        >
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+      <pre>
+        <code>{value}</code>
+      </pre>
+    </div>
+  );
+}
+
 export function Markdown({ text, streaming }: Props) {
-  const segments = splitFencedCode(text);
+  const safeText = normalizeInput(text);
+  const bundle = getMarkdownBundle();
+  const MarkdownRenderer = bundle.ReactMarkdown;
+
+  const components = {
+    h1: ({ children }: ChildProps) => <h1 className="md-h md-h1">{children}</h1>,
+    h2: ({ children }: ChildProps) => <h2 className="md-h md-h2">{children}</h2>,
+    h3: ({ children }: ChildProps) => <h3 className="md-h md-h3">{children}</h3>,
+    h4: ({ children }: ChildProps) => <h4 className="md-h md-h4">{children}</h4>,
+    h5: ({ children }: ChildProps) => <h4 className="md-h md-h4">{children}</h4>,
+    h6: ({ children }: ChildProps) => <h4 className="md-h md-h4">{children}</h4>,
+    p: ({ children }: ChildProps) => <p className="md-p">{children}</p>,
+    ul: ({ children }: ChildProps) => <ul className="md-ul">{children}</ul>,
+    ol: ({ children }: ChildProps) => <ol className="md-ol">{children}</ol>,
+    blockquote: ({ children }: ChildProps) => <blockquote className="md-blockquote">{children}</blockquote>,
+    table: ({ children }: ChildProps) => (
+      <div className="md-table-wrap">
+        <table className="md-table">{children}</table>
+      </div>
+    ),
+    a: ({ href, children }: LinkProps) => (
+      <a href={href} target="_blank" rel="noopener noreferrer">
+        {children}
+      </a>
+    ),
+    img: ({ src, alt }: ImageProps) => {
+      const safeSrc = src ?? "";
+      if (!safeSrc || isTrackingImageUrl(safeSrc)) return null;
+      return (
+        <a href={safeSrc} target="_blank" rel="noopener noreferrer">
+          {alt?.trim() || "image"}
+        </a>
+      );
+    },
+    code: ({ className, children }: CodeProps) => {
+      const raw = String(children ?? "");
+      const value = raw.replace(/\n$/, "");
+      const match = /language-([^\s]+)/.exec(className ?? "");
+      if (!match) {
+        return <code className="md-code-inline">{children}</code>;
+      }
+      return <CodeBlock lang={match[1]} value={value} />;
+    },
+  };
+
+  if (!MarkdownRenderer) {
+    const segments = splitFencedCode(safeText);
+    return (
+      <div className="md">
+        {segments.map((seg, i) =>
+          seg.kind === "code" ? (
+            <CodeBlock key={`cb-${i}`} lang={seg.lang} value={seg.value} />
+          ) : (
+            <div key={`tb-${i}`}>{renderBlocks(seg.value, `s${i}`)}</div>
+          ),
+        )}
+        {streaming && <span className="md-caret" aria-hidden="true" />}
+      </div>
+    );
+  }
+
   return (
     <div className="md">
-      {segments.map((seg, i) =>
-        seg.kind === "code" ? (
-          <CodeBlock key={`cb-${i}`} lang={seg.lang} value={seg.value} />
-        ) : (
-          <div key={`tb-${i}`}>{renderBlocks(seg.value, `s${i}`)}</div>
-        ),
-      )}
+      <MarkdownRenderer
+        remarkPlugins={bundle.remarkGfm ? [bundle.remarkGfm] : []}
+        components={components as any}
+      >
+        {safeText}
+      </MarkdownRenderer>
       {streaming && <span className="md-caret" aria-hidden="true" />}
     </div>
   );

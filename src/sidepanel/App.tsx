@@ -37,7 +37,7 @@ export function App({ controller }: Props) {
    * all communication from the background service worker.
    */
   useEffect(() => {
-    const handler = (message: any, _sender: any, sendResponse: (response?: any) => void) => {
+    const handler = (message: any, sender: any, sendResponse: (response?: any) => void) => {
       console.log("[App] Received message from service-worker:", message?.type, message);
       
       // ===== extraction-start: User clicked right-click menu =====
@@ -94,6 +94,28 @@ export function App({ controller }: Props) {
         console.error("[App] Extraction error:", message.message);
         controller.setExtractionPhase("idle"); // Reset loading UI
         setExtractionStatusText("");
+        sendResponse({ ok: true });
+      }
+
+      // ===== page-selection-changed: user selected text on the active tab =====
+      else if (message?.type === "page-selection-changed") {
+        // sender.tab.id is set for injected content scripts; use sourceTabId as fallback.
+        const tabId: number =
+          sender?.tab?.id ??
+          controller.getState().markdownPreview?.sourceTabId ??
+          0;
+        if (typeof message.markdown === "string" && message.markdown.trim()) {
+          // Pre-converted by the in-page watcher — no extra executeScript needed.
+          void controller.captureSelectionMarkdown("", tabId, message.markdown);
+        } else if (typeof message.html === "string" && message.html.trim()) {
+          void controller.captureSelectionMarkdown(message.html, tabId);
+        }
+        sendResponse({ ok: true });
+      }
+
+      // ===== page-selection-cleared: user deselected text =====
+      else if (message?.type === "page-selection-cleared") {
+        controller.revertToPageCapture();
         sendResponse({ ok: true });
       }
       

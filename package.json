@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "vite build --watch --mode development",
     "build:readability": "esbuild src/readability-bundle.ts --bundle --format=iife --global-name=Readability --outfile=public/readability.bundle.js --minify",
-    "build": "npm run build:readability && tsc -b && vite build",
+    "build:turndown": "esbuild src/turndown-bundle.ts --bundle --format=iife --outfile=public/turndown.bundle.js --minify",
+    "build:markdown": "esbuild scripts/markdown-bundle.entry.mjs --bundle --format=iife --global-name=HermesMarkdownBundle --outfile=public/markdown.bundle.js --minify",
+    "build": "npm run build:readability && npm run build:turndown && npm run build:markdown && tsc -b && vite build",
     "release:github": "python3 scripts/release/publish_github_release.py",
     "preview": "vite preview",
     "test": "vitest run",
@@ -17,8 +19,11 @@
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
     "react": "^18.3.1",
+    "react-markdown": "^9.0.3",
     "react-dom": "^18.3.1",
-    "turndown": "^7.2.1"
+    "remark-gfm": "^4.0.1",
+    "turndown": "^7.2.1",
+    "turndown-plugin-gfm": "^1.0.2"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.6.3",

@@ -38,7 +38,7 @@ import {
   type StorageGateway,
 } from "../storage/gateway";
 import { normalizeBaseUrl, toProfile } from "./profile";
-import { extractPageMainContent } from "../shared/page-extractor";
+import { extractPageMainContent, type PageExtractionResult } from "../shared/page-extractor";
 import { htmlToMarkdown } from "../shared/markdown-converter";
 
 export interface BuildControllerOptions {
@@ -97,6 +97,9 @@ export class RealController implements AppController {
 
   /** Cached models per profile, re-fetched on profile/key change. */
   private readonly modelsByProfile = new Map<ProfileKey, ModelInfo[]>();
+
+  /** Last successful full-page capture; restored when user clears selection. */
+  private lastPageCapture: import("../shared/app-state").MarkdownPreviewState | null = null;
 
   constructor(
     private readonly gateway: StorageGateway,
@@ -439,14 +442,9 @@ export class RealController implements AppController {
   }
 
   selectModel(modelId: string): void {
-    console.log("[Controller] selectModel called with:", modelId);
     const settings = { ...this.state.settings, defaultModelId: modelId };
-    console.log("[Controller] Updated settings:", settings);
     this.patch({ settings });
-    console.log("[Controller] State patched, saving to storage...");
-    void this.gateway.saveSettings(settings).then(() => {
-      console.log("[Controller] Settings saved to storage");
-    });
+    void this.gateway.saveSettings(settings);
   }
 
   async recheckHealth(): Promise<void> {
@@ -514,6 +512,13 @@ export class RealController implements AppController {
     this.patch({ extractionPhase: phase });
   }
 
+  /**
+   * Re-extract the current tab's content and convert it to Markdown.
+   * Called on boot and whenever the user clicks "刷新" in the preview panel.
+   *
+   * Pipeline: extractPageMainContent (Readability) → htmlToMarkdown (Turndown)
+   *   → fallback to parsed.text (article.textContent) if Turndown returns empty.
+   */
   async refreshMarkdownPreview(): Promise<void> {
     const tabsApi = (globalThis as { chrome?: typeof chrome }).chrome?.tabs;
     if (!tabsApi?.query) return;
@@ -523,6 +528,8 @@ export class RealController implements AppController {
       collapsed: true,
       status: "idle" as const,
     };
+    // Prevent concurrent extractions from SPA onUpdated / onActivated storms.
+    if (current.status === "loading") return;
     this.patch({
       markdownPreview: {
         ...current,
@@ -530,6 +537,22 @@ export class RealController implements AppController {
         error: undefined,
       },
     });
+
+    // Safety net: if the Promise.race timeout somehow never fires (e.g. the
+    // side-panel JS engine is throttled), force the panel out of "loading" so
+    // the user can still click 刷新 again.
+    const SAFETY_MS = 15_000;
+    const safetyTimer = setTimeout(() => {
+      if (this.state.markdownPreview?.status === "loading") {
+        this.patch({
+          markdownPreview: {
+            ...(this.state.markdownPreview),
+            status: "error",
+            error: "extraction-timeout",
+          },
+        });
+      }
+    }, SAFETY_MS);
 
     try {
       const [tab] = await tabsApi.query({ active: true, currentWindow: true });
@@ -545,24 +568,52 @@ export class RealController implements AppController {
         return;
       }
 
-      const parsed = await extractPageMainContent(tabId, { useReadability: true });
-      const markdown =
-        htmlToMarkdown(parsed.html ?? parsed.content ?? "") ||
-        (parsed.text ?? "").trim();
+      // Inject the selection watcher BEFORE extraction so it works even when
+      // extraction times out (e.g. heavy GitHub / Microsoft SPA pages).
+      this.injectSelectionWatcher(tabId);
 
-      this.patch({
-        markdownPreview: {
-          content: markdown,
-          title: parsed.title ?? tab?.title ?? "Untitled",
-          sourceUrl: tab?.url,
-          sourceTabId: tabId,
-          collapsed: current.collapsed ?? true,
-          status: markdown ? "ready" : "error",
-          ...(markdown
-            ? { updatedAt: Date.now(), error: undefined }
-            : { error: parsed.error ?? "Markdown extraction returned empty content" }),
-        },
-      });
+      // Wrap the extraction + conversion pipeline in timeouts.
+      // Pages with huge DOMs or restrictive environments cause executeScript
+      // to hang; the race ensures the panel exits "loading" regardless.
+      const EXTRACT_TIMEOUT_MS = 10_000;
+      const MARKDOWN_TIMEOUT_MS = 14_000;
+      const timeoutResult: PageExtractionResult = { text: "", error: "extraction-timeout" };
+      const parsed = await Promise.race([
+        // TEMP STABILIZATION: dynamic sites (e.g. app-shell pages) can freeze when
+        // running Readability in-page. Use fast DOM snapshot mode for preview.
+        extractPageMainContent(tabId, {
+          useReadability: true,
+          debugTrace: this.state.settings.debugPageCaptureTrace ?? false,
+        }),
+        new Promise<PageExtractionResult>((resolve) =>
+          setTimeout(() => resolve(timeoutResult), EXTRACT_TIMEOUT_MS)
+        ),
+      ]);
+      // Use the same converter as selection flow first, so full-page and
+      // selection markdown rules stay consistent.
+      const markdown = parsed.error === "extraction-timeout"
+        ? parsed.error
+        : (await Promise.race([
+            htmlToMarkdown(parsed.html ?? "", tabId),
+            new Promise<string>((resolve) =>
+              setTimeout(() => resolve(""), MARKDOWN_TIMEOUT_MS)
+            ),
+          ])) || stripSkipLinks((parsed.text ?? "").trim());
+      const nextPageCapture: import("../shared/app-state").MarkdownPreviewState = {
+        content: markdown,
+        title: parsed.title ?? tab?.title ?? "Untitled",
+        sourceUrl: tab?.url,
+        sourceTabId: tabId,
+        collapsed: current.collapsed ?? true,
+        status: markdown ? "ready" : "error",
+        captureSource: "page",
+        ...(markdown
+          ? { updatedAt: Date.now(), error: undefined }
+          : { error: parsed.error ?? "Markdown extraction returned empty content" }),
+      };
+      // Cache so revertToPageCapture() can restore without re-extracting.
+      if (markdown) this.lastPageCapture = nextPageCapture;
+      this.patch({ markdownPreview: nextPageCapture });
     } catch (error) {
       this.patch({
         markdownPreview: {
@@ -571,6 +622,8 @@ export class RealController implements AppController {
           error: error instanceof Error ? error.message : String(error),
         },
       });
+    } finally {
+      clearTimeout(safetyTimer);
     }
   }
 
@@ -603,6 +656,127 @@ export class RealController implements AppController {
 
   setComposerSelection(start: number, end: number): void {
     this.patch({ composerSelection: { start, end } });
+  }
+
+  /**
+   * Revert the preview panel back to the last full-page capture.
+   * Called when the user clears their text selection.
+   */
+  revertToPageCapture(): void {
+    if (!this.lastPageCapture) return;
+    const current = this.state.markdownPreview;
+    // Only revert if the panel is currently showing a selection capture.
+    if (current?.captureSource !== "selection") return;
+    this.patch({
+      markdownPreview: {
+        ...this.lastPageCapture,
+        collapsed: current?.collapsed ?? this.lastPageCapture.collapsed,
+      },
+    });
+  }
+
+  /**
+   * Convert selected HTML captured from the active tab into Markdown and
+   * display it in the preview panel.  Called from the App message handler
+   * when the injected selection-watcher sends a `page-selection-changed` msg.
+   */
+  async captureSelectionMarkdown(html: string, tabId: number, preConvertedMarkdown?: string): Promise<void> {
+    const immediate = preConvertedMarkdown?.trim();
+    if (!immediate && !html.trim()) return;
+    const current = this.state.markdownPreview ?? {
+      content: "",
+      collapsed: false,
+      status: "idle" as const,
+    };
+    // Don't race with an in-progress page extraction; wait for it to settle first.
+    if (current.status === "loading") return;
+
+    let markdown: string;
+    if (immediate) {
+      markdown = immediate;
+    } else {
+      const TIMEOUT_MS = 8_000;
+      markdown = await Promise.race([
+        htmlToMarkdown(html, tabId),
+        new Promise<string>((resolve) => setTimeout(() => resolve(""), TIMEOUT_MS)),
+      ]);
+    }
+    if (!markdown) return;
+
+    this.patch({
+      markdownPreview: {
+        ...current,
+        content: markdown,
+        title: "选中内容",
+        sourceTabId: tabId,
+        collapsed: false,   // auto-expand when selection is captured
+        status: "ready",
+        captureSource: "selection",
+        updatedAt: Date.now(),
+        error: undefined,
+      },
+    });
+  }
+
+  /**
+   * Inject a debounced selectionchange listener into the given tab.
+   * Protected by a window-level guard so it is safe to call multiple times.
+   * Fire-and-forget — failures are non-fatal.
+   */
+  private injectSelectionWatcher(tabId: number): void {
+    const scriptingApi = (globalThis as { chrome?: typeof chrome }).chrome?.scripting;
+    if (!scriptingApi?.executeScript) return;
+    scriptingApi
+      .executeScript({
+        target: { tabId },
+        func: () => {
+          if ((window as any).__hermesSelWatcher) return;
+          (window as any).__hermesSelWatcher = true;
+          let timer: ReturnType<typeof setTimeout> | null = null;
+          let hadSelection = false;
+          document.addEventListener("selectionchange", () => {
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(() => {
+              const sel = window.getSelection();
+              if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
+                // Selection was cleared — revert to page capture if we had one.
+                if (hadSelection) {
+                  hadSelection = false;
+                  try {
+                    const p = (chrome as any).runtime
+                      .sendMessage({ type: "page-selection-cleared" });
+                    if (p && typeof p.catch === "function") {
+                      void p.catch(() => { /* extension reloaded or no receiver */ });
+                    }
+                  } catch {
+                    // extension context invalidated
+                  }
+                }
+                return;
+              }
+              hadSelection = true;
+              const parts: string[] = [];
+              for (let i = 0; i < sel.rangeCount; i++) {
+                const wrap = document.createElement("div");
+                wrap.appendChild(sel.getRangeAt(i).cloneContents());
+                parts.push(wrap.innerHTML);
+              }
+              const html = parts.join("\n").trim();
+              if (!html) return;
+              try {
+                const p = (chrome as any).runtime
+                  .sendMessage({ type: "page-selection-changed", html });
+                if (p && typeof p.catch === "function") {
+                  void p.catch(() => { /* extension reloaded, page navigated, or no receiver */ });
+                }
+              } catch {
+                // extension context invalidated
+              }
+            }, 450);
+          });
+        },
+      })
+      .catch(() => { /* restricted page — ignore */ });
   }
 
   // ---- Internals -------------------------------------------------------
@@ -1080,6 +1254,15 @@ export class RealController implements AppController {
       return match;
     });
   }
+}
+
+/** Remove "Skip to …" lines from plain-text fallback (article.textContent). */
+function stripSkipLinks(text: string): string {
+  return text
+    .split("\n")
+    .filter((line) => !/^skip\s+to\b/i.test(line.trim()))
+    .join("\n")
+    .trim();
 }
 
 function deriveTitle(firstMessage: string): string {

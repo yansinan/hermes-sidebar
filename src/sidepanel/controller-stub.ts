@@ -678,6 +678,13 @@ export function createStubController(
     setComposerSelection(start, end) {
       patch({ composerSelection: { start, end } });
     },
+
+    async captureSelectionMarkdown(_html, _tabId, _preConverted?) {
+      // stub: no-op in dev/test environment
+    },
+    revertToPageCapture() {
+      // stub: no-op in dev/test environment
+    },
   };
 
   return stub;

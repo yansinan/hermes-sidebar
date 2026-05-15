@@ -13,5 +13,10 @@ export type ManifestV3 = {
   };
   icons?: Record<string, string>;
   background?: { service_worker: string; type?: "module" | "classic" };
+  web_accessible_resources?: Array<{
+    resources: string[];
+    matches: string[];
+    use_dynamic_url?: boolean;
+  }>;
   minimum_chrome_version?: string;
 };

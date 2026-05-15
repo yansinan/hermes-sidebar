@@ -70,6 +70,9 @@ export function SettingsDrawer({ state, controller, onClose }: Props) {
   const [maxDomInputTokensInput, setMaxDomInputTokensInput] = useState(
     String(settings.maxDomInputTokens ?? 60_000),
   );
+  const [debugPageCaptureTrace, setDebugPageCaptureTrace] = useState(
+    settings.debugPageCaptureTrace ?? false,
+  );
   const [maxDomInputTokensError, setMaxDomInputTokensError] = useState<string | null>(
     null,
   );
@@ -148,6 +151,7 @@ export function SettingsDrawer({ state, controller, onClose }: Props) {
       },
       customContextMenuItems: customMenuItems,
       maxDomInputTokens: parsedMaxDomTokens,
+      debugPageCaptureTrace,
     };
     await controller.saveSettings(patch);
     onClose();
@@ -313,6 +317,14 @@ export function SettingsDrawer({ state, controller, onClose }: Props) {
             />
             <span>Reuse Hermes server-side session (X-Hermes-Session-Id)</span>
           </label>
+          <label className="field field--checkbox">
+            <input
+              type="checkbox"
+              checked={debugPageCaptureTrace}
+              onChange={(e) => setDebugPageCaptureTrace(e.currentTarget.checked)}
+            />
+            <span>Debug: 输出整页捕获与 Readability 诊断日志</span>
+          </label>
           <p className="field__hint">
             Requires the Hermes server to have API_SERVER_KEY configured.
           </p>
@@ -361,7 +373,7 @@ export function SettingsDrawer({ state, controller, onClose }: Props) {
           </label>
 
           <label className="field">
-            <span className="field__label">选中内容到LLM-Wiki Prompt 模板</span>
+            <span className="field__label">所选内容 Prompt 模板</span>
             <textarea
               className="field__input"
               rows={8}
@@ -374,7 +386,7 @@ export function SettingsDrawer({ state, controller, onClose }: Props) {
           </label>
 
           <label className="field">
-            <span className="field__label">收到llm-wiki Prompt 模板（全页）</span>
+            <span className="field__label">整页 Prompt 模板</span>
             <textarea
               className="field__input"
               rows={8}

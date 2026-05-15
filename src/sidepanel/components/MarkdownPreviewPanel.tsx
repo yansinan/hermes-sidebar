@@ -1,5 +1,6 @@
-import { Markdown } from "./Markdown";
+import { useState } from "react";
 import type { MarkdownPreviewState } from "../../shared/app-state";
+import { Markdown } from "./Markdown";
 
 interface Props {
   preview?: MarkdownPreviewState;
@@ -14,6 +15,8 @@ export function MarkdownPreviewPanel({
   onRefresh,
   onInsertToken,
 }: Props) {
+  const [rawMode, setRawMode] = useState(false);
+
   if (!preview) return null;
 
   const isCollapsed = preview.collapsed;
@@ -35,7 +38,7 @@ export function MarkdownPreviewPanel({
         onClick={onToggle}
         aria-expanded={!isCollapsed}
       >
-        <span className="markdown-preview__title">页面 Markdown</span>
+        <span className="markdown-preview__title">捕获的 Markdown</span>
         <span className="markdown-preview__meta">{statusLabel}</span>
       </button>
 
@@ -43,9 +46,17 @@ export function MarkdownPreviewPanel({
         <>
           <div className="markdown-preview__toolbar">
             <span className="markdown-preview__source" title={preview.sourceUrl || ""}>
-              {preview.title || "Untitled"}
+              {preview.captureSource === "selection" ? "✂ 选中内容" : (preview.title || "Untitled")}
             </span>
             <div className="markdown-preview__actions">
+              <button
+                type="button"
+                className={`markdown-preview__view-toggle${rawMode ? " markdown-preview__view-toggle--active" : ""}`}
+                onClick={() => setRawMode(v => !v)}
+                title={rawMode ? "切换为渲染视图" : "切换为源码视图"}
+              >
+                源码
+              </button>
               <button type="button" onClick={onRefresh}>刷新</button>
               <button type="button" onClick={onInsertToken}>插入 {"{{markdown}}"}</button>
             </div>
@@ -61,7 +72,9 @@ export function MarkdownPreviewPanel({
               </p>
             )}
             {preview.status !== "loading" && preview.content && (
-              <Markdown text={preview.content} />
+              rawMode
+                ? <pre className="markdown-preview__raw">{preview.content}</pre>
+                : <Markdown text={preview.content} />
             )}
           </div>
         </>
