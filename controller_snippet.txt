@@ -1,0 +1,54 @@
+  async refreshMarkdownPreview(): Promise<void> {
+    const tabsApi = (globalThis as { chrome?: typeof chrome }).chrome?.tabs;
+    if (!tabsApi?.query) return;
+
+    const current = this.state.markdownPreview ?? {
+      content: "",
+      collapsed: true,
+      status: "idle" as const,
+    };
+    this.patch({
+      markdownPreview: {
+        ...current,
+        status: "loading",
+        error: undefined,
+      },
+    });
+
+    try {
+      const [tab] = await tabsApi.query({ active: true, currentWindow: true });
+      const tabId = tab?.id;
+      if (typeof tabId !== "number") {
+        this.patch({
+          markdownPreview: {
+            ...current,
+            status: "error",
+            error: "No active tab available for extraction",
+          },
+        });
+        return;
+      }
+
+      const parsed = await extractPageMainContent(tabId, { useReadability: true });
+      const markdown =
+        htmlToMarkdown(parsed.html ?? parsed.content ?? "") ||
+        (parsed.text ?? "").trim();
+
+      this.patch({
+        markdownPreview: {
+          content: markdown,
+          title: parsed.title ?? tab?.title ?? "Untitled",
+          sourceUrl: tab?.url,
+          sourceTabId: tabId,
+          collapsed: current.collapsed ?? true,
+          status: markdown ? "ready" : "error",
+          ...(markdown
+            ? { updatedAt: Date.now(), error: undefined }
+            : { error: parsed.error ?? "Markdown extraction returned empty content" }),
+        },
+      });
+    } catch (error) {
+      this.patch({
+        markdownPreview: {
+          ...current,
+          status: "error",

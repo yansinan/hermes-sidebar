@@ -8,12 +8,11 @@
     "storage",
     "tabs",
     "activeTab",
-    "scripting"
+    "scripting",
+    "contextMenus"
   ],
   "host_permissions": [
-    "http://127.0.0.1:8642/*"
-  ],
-  "optional_host_permissions": [
+    "http://127.0.0.1:8642/*",
     "http://*/*",
     "https://*/*"
   ],
@@ -39,5 +38,16 @@
     "service_worker": "background.js",
     "type": "module"
   },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "readability.bundle.js",
+        "turndown.bundle.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ],
   "minimum_chrome_version": "114"
 }
