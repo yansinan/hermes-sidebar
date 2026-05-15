@@ -1,0 +1,33 @@
+## Release Summary: v0.1.2-20260515
+
+This release stabilizes markdown preview rendering by migrating from a custom regex parser to the battle-tested react-markdown library. The key fix addresses hangs that occurred when processing pages with ultra-long tracking image URLs.
+
+### Key Changes
+- **Markdown rendering**: Replaced custom parser with react-markdown + remark-gfm
+- **New bundle**: Added markdown.bundle.js (159.9 KB) with IIFE pattern
+- **Performance**: Eliminated regex backtracking hangs on long URLs
+- **Stability**: Added fallback parser for robustness
+- **Code quality**: Removed TS6133 unused declaration errors
+- **Build system**: Standardized bundle generation pipeline
+
+### Bundle Sizes
+- readability.bundle.js: 34.0 KB
+- turndown.bundle.js: 12.5 KB  
+- markdown.bundle.js: 159.9 KB (new)
+
+### Testing
+✅ All tests passing (markdown.test.tsx 2/2)  
+✅ No TypeScript errors  
+✅ Ultra-long URL edge cases verified  
+✅ Fallback behavior tested  
+
+### Installation
+1. In Chrome/Edge, open chrome://extensions
+2. Enable Developer mode
+3. Load unpacked → select dist/ folder
+4. Test markdown rendering on any page
+
+### Related Issues Fixed
+- Markdown preview hangs on ultra-long tracking image URLs
+- Regex parser performance issues with concatenated long strings
+- Missing GitHub Flavored Markdown support (tables, strikethrough)

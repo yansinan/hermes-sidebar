@@ -10,6 +10,7 @@
     "build:turndown": "esbuild src/turndown-bundle.ts --bundle --format=iife --outfile=public/turndown.bundle.js --minify",
     "build:markdown": "esbuild scripts/markdown-bundle.entry.mjs --bundle --format=iife --global-name=HermesMarkdownBundle --outfile=public/markdown.bundle.js --minify",
     "build": "npm run build:readability && npm run build:turndown && npm run build:markdown && tsc -b && vite build",
+    "build:crx": "python3 scripts/build-crx.py",
     "release:github": "python3 scripts/release/publish_github_release.py",
     "preview": "vite preview",
     "test": "vitest run",
