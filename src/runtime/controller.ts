@@ -9,20 +9,24 @@ import type {
   AppState,
   Banner,
   ModelInfo,
-} from "../shared/app-state";
-import type {
   AssistantMessage,
   Message,
   UserMessage,
-} from "../shared/message";
-import type {
   ConnectionProfile,
   ConnectionStatus,
   ProfileKey,
-} from "../shared/profile";
-import type { Session, SessionPhase } from "../shared/session";
-import { DEFAULT_SETTINGS, type Settings } from "../shared/settings";
-import { shortId, uuid } from "../shared/ids";
+  Session,
+  SessionPhase,
+  ToolProgressEntry,
+} from "../shared/types";
+import { DEFAULT_SETTINGS, type Settings } from "../shared/types/settings";
+import {
+  extractPageMainContent,
+  htmlToMarkdown,
+  shortId,
+  uuid,
+  type PageExtractionResult,
+} from "../shared/utils";
 
 import {
   HermesApiClient,
@@ -31,15 +35,12 @@ import {
 } from "../api/client";
 import type { ApiError } from "../api/errors";
 import { consumeChatStream } from "../api/stream";
-import type { ToolProgressEntry } from "../shared/tool-progress";
 
 import {
   createStorageGateway,
   type StorageGateway,
 } from "../storage/gateway";
 import { normalizeBaseUrl, toProfile } from "./profile";
-import { extractPageMainContent, type PageExtractionResult } from "../shared/page-extractor";
-import { htmlToMarkdown } from "../shared/markdown-converter";
 
 export interface BuildControllerOptions {
   gateway?: StorageGateway;

@@ -16,20 +16,18 @@ import type {
   AppController,
   AppState,
   ModelInfo,
-} from "../shared/app-state";
-import { DEFAULT_SETTINGS, type Settings } from "../shared/settings";
-import type { ProfileKey } from "../shared/profile";
-import type {
+  ProfileKey,
   AssistantMessage,
   Message,
   UserMessage,
-} from "../shared/message";
-import type { Session, SessionPhase } from "../shared/session";
-import {
-  createRealController,
-  type BuildControllerOptions,
-} from "../runtime/controller";
-import { toProfile } from "../runtime/profile";
+  Session,
+  SessionPhase,
+} from "../shared/types";
+import { DEFAULT_SETTINGS, type Settings } from "../shared/types/settings";
+import type {
+  BuildControllerOptions,
+} from "../runtime";
+import { createRealController, toProfile } from "../runtime";
 
 function randomId(prefix = "id"): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random()

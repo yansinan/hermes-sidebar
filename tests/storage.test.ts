@@ -3,8 +3,8 @@ import {
   MemoryStorageAdapter,
   createStorageGateway,
 } from "../src/storage/gateway";
-import { DEFAULT_SETTINGS } from "../src/shared/settings";
-import type { ProfileKey } from "../src/shared/profile";
+import { DEFAULT_SETTINGS } from "../src/shared/types/settings";
+import type { ProfileKey } from "../src/shared/types/profile";
 
 describe("storage gateway (memory adapter)", () => {
   it("returns defaults when nothing is stored", async () => {

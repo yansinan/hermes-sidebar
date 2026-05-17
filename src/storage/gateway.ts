@@ -5,9 +5,9 @@
 // `chrome.storage` directly. When the `chrome.*` API is unavailable (tests,
 // node-only tooling) a memory-backed adapter with identical semantics is used.
 
-import type { ProfileKey } from "../shared/profile";
-import type { Session } from "../shared/session";
-import { DEFAULT_SETTINGS, type Settings } from "../shared/settings";
+import type { ProfileKey } from "../shared/types/profile";
+import type { Session } from "../shared/types/session";
+import { DEFAULT_SETTINGS, type Settings } from "../shared/types/settings";
 
 export const STORAGE_SCHEMA_VERSION = 1;
 

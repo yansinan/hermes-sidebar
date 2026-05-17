@@ -1,4 +1,4 @@
-import type { ManifestV3 } from "./src/shared/manifest-types";
+import type { ManifestV3 } from "./src/shared/types/manifest-types";
 import pkg from "./package.json" with { type: "json" };
 
 export const manifest: ManifestV3 = {

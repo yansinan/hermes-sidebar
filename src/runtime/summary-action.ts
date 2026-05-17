@@ -1,11 +1,12 @@
-import { buildSummaryPrompt, type PageContext } from "../shared/page-context";
+import { buildPromptFromTemplate } from "../shared/domain";
+import type { PageBodySummaryContext } from "../shared/types/page-context";
 
 export interface SummaryDraftDeps {
-  queryActiveTab?: () => Promise<PageContext | null>;
-  readSelection?: (context: PageContext) => Promise<string>;
+  queryActiveTab?: () => Promise<PageBodySummaryContext | null>;
+  readSelection?: (context: PageBodySummaryContext) => Promise<string>;
 }
 
-async function defaultQueryActiveTab(): Promise<PageContext | null> {
+async function defaultQueryActiveTab(): Promise<PageBodySummaryContext | null> {
   const tabsApi = typeof chrome === "undefined" ? undefined : chrome.tabs;
   if (!tabsApi?.query) return null;
 
@@ -49,10 +50,11 @@ export async function buildSummaryDraft(
   const readSelection = deps.readSelection ?? defaultReadSelection;
   const page = (await queryActiveTab()) ?? {};
   const selectedText = (await readSelection(page))?.trim() ?? "";
-  const prompt = buildSummaryPrompt({
+  const prompt = buildPromptFromTemplate({
+    template: "请用中文总结下面内容，给出 3 个要点：\n\n{{text}}",
     title: page.title,
     url: page.url,
-    selectedText: selectedText || undefined,
+    text: selectedText || undefined,
   });
 
   const trimmed = existingDraft.trim();

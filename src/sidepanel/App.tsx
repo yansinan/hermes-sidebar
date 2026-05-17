@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
-import type { AppController } from "../shared/app-state";
-import { TopBar } from "./components/TopBar";
-import { ConversationArea } from "./components/ConversationArea";
-import { Composer } from "./components/Composer";
-import { MarkdownPreviewPanel } from "./components/MarkdownPreviewPanel";
-import { SessionDrawer } from "./components/SessionDrawer";
-import { SettingsDrawer } from "./components/SettingsDrawer";
+import type { AppController } from "../shared/types";
+import { TopBar } from "./components/topbar/TopBar";
+import { ConversationArea } from "./components/conversation/ConversationArea";
+import { Composer } from "./components/composer/Composer";
+import { MarkdownPreviewPanel } from "./components/composer/MarkdownPreviewPanel";
+import { QuickActionBar } from "./components/composer/QuickActionBar";
+import { SessionDrawer } from "./components/overlay/SessionDrawer";
+import { SettingsDrawer } from "./components/overlay/SettingsDrawer";
+import { buildSelectionSummaryDraft, buildPageBodySummaryDraft } from "../runtime";
 import { useAppState } from "./useAppState";
 
 interface Props {
@@ -22,6 +24,20 @@ export function App({ controller }: Props) {
   const openSessions = () => setOverlay("sessions");
   const openSettings = () => setOverlay("settings");
   const closeOverlay = () => setOverlay("none");
+
+  // 快速动作：生成选区总结草稿
+  const handleSummarizeSelection = async () => {
+    const nextDraft = await buildSelectionSummaryDraft(state.draftInput);
+    controller.setDraftInput(nextDraft);
+  };
+
+  // 快速动作：生成页面正文总结草稿（复用右键“总结”模板）
+  const handleSummarizePageBody = async () => {
+    const nextDraft = await buildPageBodySummaryDraft(state.draftInput, {
+      summaryTemplate: state.settings.contextMenuPrompts.summary,
+    });
+    controller.setDraftInput(nextDraft);
+  };
 
   /**
    * Listen for messages from service-worker
@@ -172,12 +188,14 @@ export function App({ controller }: Props) {
 
   return (
     <div className="app-shell">
+      {/* 顶部导航分支：状态、模型、会话入口 */}
       <TopBar
         state={state}
         controller={controller}
         onOpenSessions={openSessions}
         onOpenSettings={openSettings}
       />
+      {/* 对话展示分支：消息流、Banner、空状态 */}
       <ConversationArea
         state={state}
         controller={controller}
@@ -207,6 +225,7 @@ export function App({ controller }: Props) {
           {extractionStatusText || (state.extractionPhase === "extracting" ? "提取页面内容中..." : "处理中...")}
         </div>
       )}
+      {/* 输入分支：预览面板 + 快速动作 + 输入框 */}
       <div className="composer-stack">
         <MarkdownPreviewPanel
           preview={state.markdownPreview}
@@ -214,9 +233,15 @@ export function App({ controller }: Props) {
           onRefresh={() => void controller.refreshMarkdownPreview()}
           onInsertToken={() => controller.insertMarkdownTokenAtCaret("{{markdown}}")}
         />
+        {/* 快速动作栏：选区总结、正文总结（现已独立于 Composer，基于全局 draft） */}
+        <QuickActionBar
+          onSummarizeSelection={() => void handleSummarizeSelection()}
+          onSummarizePageBody={() => void handleSummarizePageBody()}
+        />
         <Composer state={state} controller={controller} />
       </div>
 
+      {/* 弹层分支：会话管理与设置 */}
       {overlay === "sessions" && (
         <SessionDrawer
           state={state}

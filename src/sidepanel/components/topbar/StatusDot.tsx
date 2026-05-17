@@ -1,4 +1,4 @@
-import type { ConnectionStatus } from "../../shared/profile";
+import type { ConnectionStatus } from "../../../shared/types/profile";
 
 interface Props {
   status: ConnectionStatus;

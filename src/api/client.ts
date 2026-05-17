@@ -8,7 +8,7 @@
 // The client never deletes local state on error and never retries
 // automatically. Retries are always user-initiated (§4.4).
 
-import type { Message } from "../shared/message";
+import type { Message } from "../shared/types/message";
 import {
   classifyHttpStatus,
   extractShortMessage,

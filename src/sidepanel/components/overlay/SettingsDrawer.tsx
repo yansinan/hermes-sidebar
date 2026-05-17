@@ -1,12 +1,12 @@
 import { useState } from "react";
-import type { AppController, AppState } from "../../shared/app-state";
+import type { AppController, AppState } from "../../../shared/app-state";
 import type {
   CustomContextMenuItem,
   CustomMenuSource,
   EnterBehavior,
   Settings,
-} from "../../shared/settings";
-import { approxTokensToChars } from "../../shared/settings";
+} from "../../../shared/types/settings";
+import { approxTokensToChars } from "../../../shared/types/settings";
 import { Overlay } from "./Overlay";
 
 interface Props {

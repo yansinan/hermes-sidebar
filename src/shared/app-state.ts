@@ -8,9 +8,9 @@ import type {
   ConnectionProfile,
   ConnectionStatus,
   ProfileKey,
-} from "./profile";
-import type { Session, SessionPhase } from "./session";
-import type { Settings } from "./settings";
+} from "./types/profile";
+import type { Session, SessionPhase } from "./types/session";
+import type { Settings } from "./types/settings";
 
 export interface ModelInfo {
   id: string;

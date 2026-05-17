@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { App } from "../src/sidepanel/App";
 import { createStubController } from "../src/sidepanel/controller-stub";
-import { DEFAULT_SETTINGS } from "../src/shared/settings";
+import { DEFAULT_SETTINGS } from "../src/shared/types/settings";
 
 describe("side panel scaffold", () => {
   it("renders top, middle, and bottom regions with the empty state", () => {

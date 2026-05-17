@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { AppController, AppState, Banner } from "../../shared/app-state";
+import type { AppController, AppState, Banner } from "../../../shared/app-state";
 import { MessageItem } from "./MessageItem";
 
 interface Props {

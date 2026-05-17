@@ -7,6 +7,35 @@ export function buildSummaryPrompt(): string {
 }
 
 /**
+ * 将模板中的 {{var}} 占位符替换为上下文变量。
+ */
+export function renderPromptTemplate(template: string, vars: Record<string, string>): string {
+  return template.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_m, key) => vars[key] ?? "");
+}
+
+/**
+ * 构建与右键菜单一致的模板提示词（summary/llm-wiki/custom 菜单共用）。
+ */
+export function buildPromptFromTemplate(params: {
+  template: string;
+  title?: string;
+  url?: string;
+  domHtml?: string;
+  text?: string;
+  menuTitle?: string;
+  nowIso?: string;
+}): string {
+  return renderPromptTemplate(params.template, {
+    title: params.title ?? "Untitled",
+    url: params.url ?? "about:blank",
+    dom_html: params.domHtml ?? "",
+    text: params.text ?? "",
+    menu_title: params.menuTitle ?? "",
+    now_iso: params.nowIso ?? new Date().toISOString(),
+  });
+}
+
+/**
  * Build a prompt for one-line summary of selected text (for quote context)
  * Used when user selects text and wants it displayed as a conversation quote
  * @param selectedText The text selected by the user

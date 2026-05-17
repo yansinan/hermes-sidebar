@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildSummaryPrompt } from "../src/shared/prompt-templates";
+import { buildSummaryPrompt } from "../src/shared/domain/prompt-templates";
 
 describe("prompt templates", () => {
   it("builds a concise Chinese summary prompt", () => {

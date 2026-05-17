@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { Markdown } from "../src/sidepanel/components/Markdown";
+import { Markdown } from "../src/sidepanel/components/shared/Markdown";
 
 describe("Markdown", () => {
   it("renders headings, lists, code blocks, and inline emphasis", () => {

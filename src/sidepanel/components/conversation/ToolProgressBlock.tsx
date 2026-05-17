@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { ToolProgressEntry } from "../../shared/tool-progress";
+import type { ToolProgressEntry } from "../../../shared/types/tool-progress";
 
 interface Props {
   entries: ToolProgressEntry[];

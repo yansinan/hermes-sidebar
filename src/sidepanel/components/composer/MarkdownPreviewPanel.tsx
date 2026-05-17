@@ -1,6 +1,6 @@
 import { useState } from "react";
-import type { MarkdownPreviewState } from "../../shared/app-state";
-import { Markdown } from "./Markdown";
+import type { MarkdownPreviewState } from "../../../shared/app-state";
+import { Markdown } from "../shared/Markdown";
 
 interface Props {
   preview?: MarkdownPreviewState;

@@ -1,6 +1,6 @@
-import type { AppController } from "../../shared/app-state";
-import type { AssistantMessage, Message, UserMessage } from "../../shared/message";
-import { Markdown } from "./Markdown";
+import type { AppController } from "../../../shared/app-state";
+import type { AssistantMessage, Message, UserMessage } from "../../../shared/types/message";
+import { Markdown } from "../shared/Markdown";
 import { ToolProgressBlock } from "./ToolProgressBlock";
 
 interface Props {

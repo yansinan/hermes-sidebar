@@ -1,8 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { AppController, AppState } from "../../shared/app-state";
-import { buildSummaryDraft } from "../../runtime/summary-action";
-import { buildPageBodySummaryDraft } from "../../runtime/page-body-summary-action";
-import { QuickActionBar } from "./QuickActionBar";
+import type { AppController, AppState } from "../../../shared/app-state";
 
 interface Props {
   state: AppState;
@@ -20,6 +17,13 @@ export function Composer({ state, controller }: Props) {
   } = state;
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [composing, setComposing] = useState(false);
+  // 本地输入内容
+  const [localDraft, setLocalDraft] = useState("");
+
+  // 跟随全局 draftInput 初始化和外部变化
+  useEffect(() => {
+    setLocalDraft(draftInput);
+  }, [draftInput]);
 
   const activePhase = activeSessionId ? sessionPhases[activeSessionId] : undefined;
   const isStreaming = activePhase === "streaming";
@@ -27,50 +31,27 @@ export function Composer({ state, controller }: Props) {
   const connectionFailed = connectionStatus.kind === "failed";
   const noModels = models.length === 0;
   const inputDisabled = connectionFailed || noModels;
-  const canSend = !inputDisabled && !composing && draftInput.trim().length > 0;
+  const canSend = !inputDisabled && !composing && localDraft.trim().length > 0;
 
-  // Autosize textarea up to the CSS max-height cap.
+  // Textarea 自动高度调整，不超过 CSS 设定的最大高度
   useEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight}px`;
-  }, [draftInput]);
+  }, [localDraft]);
 
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    const selection = state.composerSelection;
-    if (!selection) return;
-    if (document.activeElement !== el) return;
-    const start = Math.min(selection.start, draftInput.length);
-    const end = Math.min(selection.end, draftInput.length);
-    requestAnimationFrame(() => {
-      try {
-        el.setSelectionRange(start, end);
-      } catch {
-        // noop in environments where selection APIs are restricted
-      }
-    });
-  }, [draftInput, state.composerSelection]);
+  // 发送时同步本地内容到全局
+  const syncDraftToGlobal = () => {
+    if (localDraft !== draftInput) {
+      controller.setDraftInput(localDraft);
+    }
+  };
 
   const onSend = () => {
     if (!canSend) return;
+    syncDraftToGlobal();
     void controller.send();
-  };
-
-  // Phase 1A: selection-aware quick summary. It keeps the original quick
-  // action lightweight and only adds current-tab metadata plus selection.
-  const onSummarizeSelection = async () => {
-    const nextDraft = await buildSummaryDraft(draftInput);
-    controller.setDraftInput(nextDraft);
-  };
-
-  // Phase 1B: page-body summary. This lives beside the quick summary button so
-  // tomorrow we can test both paths independently.
-  const onSummarizePageBody = async () => {
-    const nextDraft = await buildPageBodySummaryDraft(draftInput);
-    controller.setDraftInput(nextDraft);
   };
 
   const onStop = () => {
@@ -78,21 +59,21 @@ export function Composer({ state, controller }: Props) {
     controller.stop(activeSessionId);
   };
 
+  // 快捷键处理：Ctrl+Enter 发送，Enter/Shift+Enter 默认换行，Escape 停止流
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (composing || e.nativeEvent.isComposing) return;
 
-    if (e.key === "Enter") {
-      const shouldSend =
-        (settings.enterBehavior === "send" && !e.shiftKey) ||
-        (settings.enterBehavior === "newline" && e.shiftKey);
-      if (shouldSend) {
-        e.preventDefault();
-        onSend();
-      }
-    } else if (e.key === "Escape" && isStreaming) {
+    // Ctrl+Enter（或 Cmd+Enter 在 Mac）发送消息
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      e.preventDefault();
+      onSend();
+    }
+    // Escape 在流式响应时停止
+    else if (e.key === "Escape" && isStreaming) {
       e.preventDefault();
       onStop();
     }
+    // Enter/Shift+Enter 都走浏览器默认换行行为，无需特殊处理
   };
 
   const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -104,8 +85,8 @@ export function Composer({ state, controller }: Props) {
       const start = el.selectionStart ?? 0;
       const end = el.selectionEnd ?? 0;
       const next =
-        draftInput.slice(0, start) + plain + draftInput.slice(end);
-      controller.setDraftInput(next);
+        localDraft.slice(0, start) + plain + localDraft.slice(end);
+      setLocalDraft(next);
       requestAnimationFrame(() => {
         const caret = start + plain.length;
         el.setSelectionRange(caret, caret);
@@ -113,19 +94,17 @@ export function Composer({ state, controller }: Props) {
     }
   };
 
-  const onDrop = (e: React.DragEvent<HTMLTextAreaElement>) => {
-    if (e.dataTransfer.types.includes("Files")) {
-      e.preventDefault();
-      controller.setDraftInput(
-        draftInput + (draftInput && !draftInput.endsWith("\n") ? "\n" : "") +
-          "(Attachments are not supported yet.)",
-      );
-    }
-  };
-
-  const syncSelection = (el: HTMLTextAreaElement) => {
-    controller.setComposerSelection(el.selectionStart ?? 0, el.selectionEnd ?? 0);
-  };
+  // 拖拽上传暂不支持，onDrop 已注释
+  // const onDrop = (e: React.DragEvent<HTMLTextAreaElement>) => {
+  //   if (e.dataTransfer.types.includes("Files")) {
+  //     e.preventDefault();
+  //     const next =
+  //       localDraft + (localDraft && !localDraft.endsWith("\n") ? "\n" : "") +
+  //       "(Attachments are not supported yet.)";
+  //     setLocalDraft(next);
+  //     controller.setDraftInput(next);
+  //   }
+  // };
 
   // Placeholder stays constant; the disabled reason is surfaced via tooltip/title
   // per ui-spec §4.1 ("shows the same placeholder" + tooltip explains blocker).
@@ -142,31 +121,23 @@ export function Composer({ state, controller }: Props) {
     settings.defaultModelId ||
     models[0]?.id ||
     "—";
-  const charCount = draftInput.length;
-
-  const keyShortcut =
-    settings.enterBehavior === "send"
-      ? "Enter"
-      : "Shift+Enter";
+  const charCount = localDraft.length;
+  // 快捷键提示：使用 Ctrl+Enter 或 Cmd+Enter 发送
+  const keyShortcut = "Ctrl+Enter";
 
   return (
     <footer className="composer" aria-label="Compose message">
-      <QuickActionBar
-        onSummarizeSelection={() => void onSummarizeSelection()}
-        onSummarizePageBody={() => void onSummarizePageBody()}
-      />
       <textarea
         ref={textareaRef}
         className="composer__input"
         placeholder={placeholder}
-        value={draftInput}
-        onChange={(e) => controller.setDraftInput(e.currentTarget.value)}
+        value={localDraft}
+        onChange={e => setLocalDraft(e.currentTarget.value)}
+        onBlur={syncDraftToGlobal}
         onKeyDown={onKeyDown}
         onPaste={onPaste}
-        onDrop={onDrop}
-        onSelect={(e) => syncSelection(e.currentTarget)}
-        onClick={(e) => syncSelection(e.currentTarget)}
-        onKeyUp={(e) => syncSelection(e.currentTarget)}
+        // onDrop 暂注释，待后续恢复或删除
+        // onDrop={onDrop}
         onCompositionStart={() => setComposing(true)}
         onCompositionEnd={() => setComposing(false)}
         rows={2}

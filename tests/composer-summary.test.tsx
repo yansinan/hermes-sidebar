@@ -2,16 +2,16 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { App } from "../src/sidepanel/App";
 import { createStubController } from "../src/sidepanel/controller-stub";
-import * as summaryAction from "../src/runtime/summary-action";
+import * as selectionSummaryAction from "../src/runtime/selection-summary-action";
 import * as pageBodySummaryAction from "../src/runtime/page-body-summary-action";
 
-vi.mock("../src/runtime/summary-action", async () => {
-  const actual = await vi.importActual<typeof import("../src/runtime/summary-action")>(
-    "../src/runtime/summary-action",
+vi.mock("../src/runtime/selection-summary-action", async () => {
+  const actual = await vi.importActual<typeof import("../src/runtime/selection-summary-action")>(
+    "../src/runtime/selection-summary-action",
   );
   return {
     ...actual,
-    buildSummaryDraft: vi.fn(async () => "总结占位：来自选区的内容"),
+    buildSelectionSummaryDraft: vi.fn(async () => "总结占位：来自选区的内容"),
   };
 });
 
@@ -35,7 +35,7 @@ describe("summary quick action flow", () => {
     await waitFor(() => {
       expect(controller.getState().draftInput).toBe("总结占位：来自选区的内容");
     });
-    expect(summaryAction.buildSummaryDraft).toHaveBeenCalledTimes(1);
+    expect(selectionSummaryAction.buildSelectionSummaryDraft).toHaveBeenCalledTimes(1);
   });
 
   it("fills the composer with a page-body-aware summary prompt", async () => {

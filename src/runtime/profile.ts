@@ -5,7 +5,7 @@
 // input are scoped per profile. v1 performs no DNS canonicalization: `127.0.0.1`
 // and `localhost` are intentionally different profiles.
 
-import type { ConnectionProfile, ProfileKey } from "../shared/profile";
+import type { ConnectionProfile, ProfileKey } from "../shared/types/profile";
 
 export interface ParsedBaseUrl {
   baseUrl: string;

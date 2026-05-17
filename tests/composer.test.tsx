@@ -78,4 +78,25 @@ describe("composer flow", () => {
 
     expect(controller.getState().draftInput).toBe("ab{{markdown}}cd");
   });
+
+  it("keeps the caret where the user typed instead of rewinding it", async () => {
+    const controller = createStubController();
+    render(<App controller={controller} />);
+    await flushHealth();
+
+    const ta = screen.getByPlaceholderText(
+      /ask hermes anything/i,
+    ) as HTMLTextAreaElement;
+
+    fireEvent.change(ta, { target: { value: "ab" } });
+    fireEvent.select(ta, {
+      target: { selectionStart: 2, selectionEnd: 2 },
+    });
+    fireEvent.keyUp(ta, { key: "b" });
+
+    fireEvent.change(ta, { target: { value: "abc" } });
+
+    expect(controller.getState().draftInput).toBe("abc");
+    expect(controller.getState().composerSelection).toEqual({ start: 2, end: 2 });
+  });
 });

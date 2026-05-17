@@ -1,10 +1,8 @@
-// Tool-progress projection attached to a streaming assistant message.
-//
-// Driven by the `hermes.tool.progress` SSE custom event (docs/product-design.md
-// §6.2, §7.4 and docs/ui-spec.md §3.4). Tool-progress content is never appended
-// to the message text; it is shown as inline collapsible blocks and is copied
-// separately from the message prose.
-
+/**
+ * Tool-progress projection attached to a streaming assistant message.
+ * Driven by the `hermes.tool.progress` SSE custom event (see docs/product-design.md §6.2, §7.4; docs/ui-spec.md §3.4).
+ * Tool-progress content is shown as inline collapsible blocks, never appended to message text.
+ */
 export type ToolProgressPhase = "start" | "update" | "end";
 
 export interface ToolProgressEntry {

@@ -1,3 +1,7 @@
+/**
+ * Chrome Manifest V3 type definition for extension manifests.
+ * See: https://developer.chrome.com/docs/extensions/mv3/manifest/
+ */
 export type ManifestV3 = {
   manifest_version: 3;
   name: string;

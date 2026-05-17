@@ -1,4 +1,4 @@
-import { useState, type ComponentType, type ReactNode } from "react";
+import { memo, useMemo, useState, type ComponentType, type ReactNode } from "react";
 
 // Markdown renderer (docs/ui-spec.md §3.2).
 // Uses a maintained parser to avoid edge-case hangs from hand-rolled regex parsing.
@@ -432,57 +432,64 @@ function CodeBlock({ lang, value }: { lang: string; value: string }) {
   );
 }
 
-export function Markdown({ text, streaming }: Props) {
-  const safeText = normalizeInput(text);
+function MarkdownInner({ text, streaming }: Props) {
+  // 文本归一化可能处理大字符串，使用 memo 避免无关重渲染时重复计算。
+  const safeText = useMemo(() => normalizeInput(text), [text]);
   const bundle = getMarkdownBundle();
   const MarkdownRenderer = bundle.ReactMarkdown;
 
-  const components = {
-    h1: ({ children }: ChildProps) => <h1 className="md-h md-h1">{children}</h1>,
-    h2: ({ children }: ChildProps) => <h2 className="md-h md-h2">{children}</h2>,
-    h3: ({ children }: ChildProps) => <h3 className="md-h md-h3">{children}</h3>,
-    h4: ({ children }: ChildProps) => <h4 className="md-h md-h4">{children}</h4>,
-    h5: ({ children }: ChildProps) => <h4 className="md-h md-h4">{children}</h4>,
-    h6: ({ children }: ChildProps) => <h4 className="md-h md-h4">{children}</h4>,
-    p: ({ children }: ChildProps) => <p className="md-p">{children}</p>,
-    ul: ({ children }: ChildProps) => <ul className="md-ul">{children}</ul>,
-    ol: ({ children }: ChildProps) => <ol className="md-ol">{children}</ol>,
-    blockquote: ({ children }: ChildProps) => <blockquote className="md-blockquote">{children}</blockquote>,
-    table: ({ children }: ChildProps) => (
-      <div className="md-table-wrap">
-        <table className="md-table">{children}</table>
-      </div>
-    ),
-    a: ({ href, children }: LinkProps) => (
-      <a href={href} target="_blank" rel="noopener noreferrer">
-        {children}
-      </a>
-    ),
-    img: ({ src, alt }: ImageProps) => {
-      const safeSrc = src ?? "";
-      if (!safeSrc || isTrackingImageUrl(safeSrc)) return null;
-      return (
-        <a href={safeSrc} target="_blank" rel="noopener noreferrer">
-          {alt?.trim() || "image"}
+  // ReactMarkdown 的组件映射是稳定结构，memo 后可减少对象重建与子树比对噪音。
+  const components = useMemo(
+    () => ({
+      h1: ({ children }: ChildProps) => <h1 className="md-h md-h1">{children}</h1>,
+      h2: ({ children }: ChildProps) => <h2 className="md-h md-h2">{children}</h2>,
+      h3: ({ children }: ChildProps) => <h3 className="md-h md-h3">{children}</h3>,
+      h4: ({ children }: ChildProps) => <h4 className="md-h md-h4">{children}</h4>,
+      h5: ({ children }: ChildProps) => <h4 className="md-h md-h4">{children}</h4>,
+      h6: ({ children }: ChildProps) => <h4 className="md-h md-h4">{children}</h4>,
+      p: ({ children }: ChildProps) => <p className="md-p">{children}</p>,
+      ul: ({ children }: ChildProps) => <ul className="md-ul">{children}</ul>,
+      ol: ({ children }: ChildProps) => <ol className="md-ol">{children}</ol>,
+      blockquote: ({ children }: ChildProps) => <blockquote className="md-blockquote">{children}</blockquote>,
+      table: ({ children }: ChildProps) => (
+        <div className="md-table-wrap">
+          <table className="md-table">{children}</table>
+        </div>
+      ),
+      a: ({ href, children }: LinkProps) => (
+        <a href={href} target="_blank" rel="noopener noreferrer">
+          {children}
         </a>
-      );
-    },
-    code: ({ className, children }: CodeProps) => {
-      const raw = String(children ?? "");
-      const value = raw.replace(/\n$/, "");
-      const match = /language-([^\s]+)/.exec(className ?? "");
-      if (!match) {
-        return <code className="md-code-inline">{children}</code>;
-      }
-      return <CodeBlock lang={match[1]} value={value} />;
-    },
-  };
+      ),
+      img: ({ src, alt }: ImageProps) => {
+        const safeSrc = src ?? "";
+        if (!safeSrc || isTrackingImageUrl(safeSrc)) return null;
+        return (
+          <a href={safeSrc} target="_blank" rel="noopener noreferrer">
+            {alt?.trim() || "image"}
+          </a>
+        );
+      },
+      code: ({ className, children }: CodeProps) => {
+        const raw = String(children ?? "");
+        const value = raw.replace(/\n$/, "");
+        const match = /language-([^\s]+)/.exec(className ?? "");
+        if (!match) {
+          return <code className="md-code-inline">{children}</code>;
+        }
+        return <CodeBlock lang={match[1]} value={value} />;
+      },
+    }),
+    [],
+  );
+
+  // fallback 渲染路径中，分段解析是主要开销点，safeText 不变则复用结果。
+  const fallbackSegments = useMemo(() => splitFencedCode(safeText), [safeText]);
 
   if (!MarkdownRenderer) {
-    const segments = splitFencedCode(safeText);
     return (
       <div className="md">
-        {segments.map((seg, i) =>
+        {fallbackSegments.map((seg, i) =>
           seg.kind === "code" ? (
             <CodeBlock key={`cb-${i}`} lang={seg.lang} value={seg.value} />
           ) : (
@@ -506,3 +513,6 @@ export function Markdown({ text, streaming }: Props) {
     </div>
   );
 }
+
+// 共享渲染器：当 text/streaming 未变化时跳过重渲染，减少消息区与预览区的重复计算。
+export const Markdown = memo(MarkdownInner);

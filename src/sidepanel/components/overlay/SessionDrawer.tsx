@@ -1,6 +1,6 @@
 import { useState } from "react";
-import type { AppController, AppState } from "../../shared/app-state";
-import type { Session } from "../../shared/session";
+import type { AppController, AppState } from "../../../shared/app-state";
+import type { Session } from "../../../shared/types/session";
 import { Overlay } from "./Overlay";
 
 interface Props {

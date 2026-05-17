@@ -1,5 +1,5 @@
-import type { AppController, AppState } from "../../shared/app-state";
-import { BUILD_INFO } from "../../shared/build-info";
+import type { AppController, AppState } from "../../../shared/app-state";
+import { BUILD_INFO } from "../../../shared/types/build-info";
 import { StatusDot } from "./StatusDot";
 
 interface Props {

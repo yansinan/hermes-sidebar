@@ -1,11 +1,11 @@
 /// <reference types="chrome" />
 
-import { extractPageMainContent } from "../shared/page-extractor";
+import { extractPageMainContent } from "../shared/extractPageMainContent";
 import { HermesApiClient, toWireMessages } from "../api/client";
 import { consumeChatStream } from "../api/stream";
 import { createStorageGateway } from "../storage/gateway";
-import { shortId } from "../shared/ids";
-import type { AssistantMessage, UserMessage } from "../shared/message";
+import { shortId } from "../shared/utils/ids";
+import type { AssistantMessage, UserMessage } from "../shared/types/message";
 import {
   DEFAULT_CUSTOM_MENU_PROMPT_TEMPLATE,
   DEFAULT_SETTINGS,
@@ -13,7 +13,8 @@ import {
   approxTokensToChars,
   type CustomContextMenuItem,
   type Settings,
-} from "../shared/settings";
+} from "../shared/types/settings";
+import { buildPromptFromTemplate } from "../shared/domain";
 
 const MAX_LLM_WIKI_PROMPT_TOKENS = 80_000;
 const CUSTOM_MENU_ID_PREFIX = "hermes_custom_";
@@ -42,10 +43,6 @@ function customMenuRuntimeId(id: string): string {
   return `${CUSTOM_MENU_ID_PREFIX}${safeMenuId(id)}`;
 }
 
-function renderPromptTemplate(template: string, vars: Record<string, string>): string {
-  return template.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_m, key) => vars[key] ?? "");
-}
-
 function getPromptTemplates(settings: Settings) {
   return {
     summary:
@@ -58,24 +55,6 @@ function getPromptTemplates(settings: Settings) {
       settings.contextMenuPrompts?.llmWikiPage ||
       DEFAULT_SETTINGS.contextMenuPrompts.llmWikiPage,
   };
-}
-
-function buildPromptFromTemplate(params: {
-  template: string;
-  title?: string;
-  url?: string;
-  domHtml?: string;
-  text?: string;
-  menuTitle?: string;
-}): string {
-  return renderPromptTemplate(params.template, {
-    title: params.title ?? "Untitled",
-    url: params.url ?? "about:blank",
-    dom_html: params.domHtml ?? "",
-    text: params.text ?? "",
-    menu_title: params.menuTitle ?? "",
-    now_iso: ts(),
-  });
 }
 
 function validateLlmWikiPromptLength(params: {
