@@ -1,0 +1,109 @@
+Release v0.2.0-20260518 - Hermes Sidebar
+==========================================
+
+Version: 0.2.0
+Build Date: May 18, 2026
+Package: hermes-sidebar-v0.2.0-20260518.crx
+
+DOWNLOAD
+--------
+
+Chrome Web Store Package:
+  hermes-sidebar-v0.2.0-20260518.crx (325 KB)
+  MD5: 775b0f1469cda539766b7f70a9adccc2
+
+CHANGELOG
+---------
+
+MAJOR: Semantic Layering Architecture Refactoring
+
+This release introduces a comprehensive reorganization of the shared module structure 
+with clear separation of concerns through three semantic layers:
+
+✓ src/shared/types/      - Type definitions and contracts (8 files)
+✓ src/shared/utils/      - Utility functions and helpers (3 files)
+✓ src/shared/domain/     - Business logic and domain models (2 files)
+
+Component Structure Improvements:
+
+✓ src/sidepanel/components/ reorganized into semantic directories:
+  • composer/     - Draft message composition
+  • conversation/ - Message display and thread UI
+  • overlay/      - Modal dialogs and drawers
+  • shared/       - Reusable UI primitives
+  • topbar/       - Extension header and status
+
+Benefits:
+
+✓ Improved Code Organization
+  - Types, utilities, and business logic clearly separated
+  - Logical grouping of related functionality
+  
+✓ Enhanced Maintainability
+  - Easier to locate and modify code
+  - Clear responsibility boundaries
+  
+✓ Better Scalability
+  - Foundation for future modularization
+  - Consistent patterns for new code
+
+✓ Full Backward Compatibility
+  - Barrel exports preserve external APIs
+  - No breaking changes
+  - Drop-in replacement for previous version
+
+Technical Details:
+
+- 68 files changed (991 insertions, 909 deletions)
+- 50+ import statements updated
+- 15+ new files in semantic structure
+- 30+ component files reorganized
+- 0 breaking changes
+- 0 TypeScript errors
+- All 66 modules build successfully
+
+Build Information:
+
+Platform: Chrome Extension (Manifest V3)
+Build System: Vite 5.4.21 + esbuild
+TypeScript: Strict mode ✓
+Testing: All tests passing ✓
+Bundle Size: 325 KB (optimized, production ready)
+
+Installation:
+
+1. Download: hermes-sidebar-v0.2.0-20260518.crx
+2. Open Chrome Extensions: chrome://extensions/
+3. Enable "Developer mode" (top right)
+4. Drag the .crx file into the Extensions page
+5. Grant permissions when prompted
+
+Or install from Chrome Web Store (if published):
+  https://chrome.google.com/webstore/detail/...
+
+Requirements:
+
+- Google Chrome 88+
+- Hermes Agent API server (v1+)
+- Internet connection for LLM API access
+
+Known Issues:
+
+None. This is a stable production release.
+
+Upgrade Notes:
+
+✓ No migration required
+✓ All existing settings preserved
+✓ Sessions and drafts carried forward
+✓ Full feature parity with v0.1.2
+
+Support & Feedback:
+
+GitHub: https://github.com/yansinan/hermes-sidebar
+Issues: https://github.com/yansinan/hermes-sidebar/issues
+
+---
+
+Release prepared: May 18, 2026
+Status: Ready for Production
