@@ -1,10 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import {
-  consumeRunEvents,
-  type RunEventHandlers,
-  type RunLifecyclePayload,
-} from "../src/api/runs";
-import type { ToolProgressPayload } from "../src/api/stream";
+import { consumeRunEvents } from "../src/api/runs";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -43,184 +38,138 @@ function pendingSseResponse(): {
 }
 
 // ---------------------------------------------------------------------------
-// Text delta (same wire format as chat completions)
+// ---------------------------------------------------------------------------
+// Tool lifecycle events
 // ---------------------------------------------------------------------------
 
-describe("consumeRunEvents — text deltas", () => {
-  it("emits text deltas from standard delta chunks", async () => {
+describe("consumeRunEvents — tool lifecycle", () => {
+  it("emits tool.started and tool.completed events", async () => {
     const res = sseResponse([
-      'data: {"choices":[{"delta":{"content":"He"}}]}\n\n',
-      'data: {"choices":[{"delta":{"content":"llo"}}]}\n\n',
-      "data: [DONE]\n\n",
+      'data: {"event":"tool.started","run_id":"r1","timestamp":1000,"tool":"terminal","preview":"ls -la"}\n\n',
+      'data: {"event":"tool.completed","run_id":"r1","timestamp":1001,"tool":"terminal","duration":0.5,"error":false}\n\n',
+      'data: {"event":"run.completed","run_id":"r1","timestamp":1002,"output":"result","usage":{"input_tokens":10,"output_tokens":20,"total_tokens":30}}\n\n',
+    ]);
+    const toolStarts: string[] = [];
+    const toolCompletes: string[] = [];
+    const outputs: string[] = [];
+    const outcome = await consumeRunEvents(res, {
+      onToolStarted: (p) => toolStarts.push(p.tool),
+      onToolCompleted: (p) => toolCompletes.push(p.tool),
+      onRunCompleted: (p) => outputs.push(p.output),
+    });
+    expect(outcome).toEqual({ kind: "ok" });
+    expect(toolStarts).toEqual(["terminal"]);
+    expect(toolCompletes).toEqual(["terminal"]);
+    expect(outputs).toEqual(["result"]);
+  });
+
+  it("captures tool preview and duration", async () => {
+    const res = sseResponse([
+      'data: {"event":"tool.started","run_id":"r1","timestamp":1000,"tool":"bash","preview":"echo test"}\n\n',
+      'data: {"event":"tool.completed","run_id":"r1","timestamp":1001,"tool":"bash","duration":0.123,"error":false}\n\n',
+      'data: {"event":"run.completed","run_id":"r1","timestamp":1002,"output":"done","usage":{"input_tokens":5,"output_tokens":10,"total_tokens":15}}\n\n',
+    ]);
+    let captured: { preview?: string; duration: number } = { duration: 0 };
+    await consumeRunEvents(res, {
+      onToolStarted: (p) => { captured.preview = p.preview; },
+      onToolCompleted: (p) => { captured.duration = p.duration; },
+    });
+    expect(captured.preview).toBe("echo test");
+    expect(captured.duration).toBe(0.123);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reasoning available
+// ---------------------------------------------------------------------------
+
+describe("consumeRunEvents — reasoning", () => {
+  it("emits reasoning.available events", async () => {
+    const res = sseResponse([
+      'data: {"event":"reasoning.available","run_id":"r1","timestamp":1000,"text":"Let me think..."}\n\n',
+      'data: {"event":"run.completed","run_id":"r1","timestamp":1002,"output":"answer"}\n\n',
+    ]);
+    const reasonings: string[] = [];
+    await consumeRunEvents(res, {
+      onReasoningAvailable: (p) => reasonings.push(p.text),
+    });
+    expect(reasonings).toEqual(["Let me think..."]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Message delta
+// ---------------------------------------------------------------------------
+
+describe("consumeRunEvents — message delta", () => {
+  it("emits message.delta chunks for streaming output", async () => {
+    const res = sseResponse([
+      'data: {"event":"message.delta","run_id":"r1","timestamp":1000,"delta":"Hel"}\n\n',
+      'data: {"event":"message.delta","run_id":"r1","timestamp":1001,"delta":"lo"}\n\n',
+      'data: {"event":"run.completed","run_id":"r1","timestamp":1002,"output":"Hello"}\n\n',
     ]);
     const deltas: string[] = [];
-    const outcome = await consumeRunEvents(res, { onTextDelta: (d) => deltas.push(d) });
+    const outcome = await consumeRunEvents(res, {
+      onMessageDelta: (p) => deltas.push(p.delta),
+    });
     expect(outcome).toEqual({ kind: "ok" });
     expect(deltas.join("")).toBe("Hello");
   });
-
-  it("emits thinking deltas via reasoning_content", async () => {
-    const res = sseResponse([
-      'data: {"choices":[{"delta":{"reasoning_content":"think"}}]}\n\n',
-      "data: [DONE]\n\n",
-    ]);
-    const thinkings: string[] = [];
-    const outcome = await consumeRunEvents(res, { onThinkingDelta: (d) => thinkings.push(d) });
-    expect(outcome.kind).toBe("ok");
-    expect(thinkings).toEqual(["think"]);
-  });
-
-  it("captures server session ref from session_id field", async () => {
-    const res = sseResponse([
-      'data: {"session_id":"srv-99","choices":[{"delta":{"content":"hi"}}]}\n\n',
-      "data: [DONE]\n\n",
-    ]);
-    let ref: string | undefined;
-    await consumeRunEvents(res, { onServerSessionRef: (r) => { ref = r; } });
-    expect(ref).toBe("srv-99");
-  });
 });
 
 // ---------------------------------------------------------------------------
-// hermes.tool.progress (same as chat endpoint)
+// Run completion with output and usage
 // ---------------------------------------------------------------------------
 
-describe("consumeRunEvents — tool progress", () => {
-  it("surfaces started and finished tool progress events", async () => {
+describe("consumeRunEvents — run completion", () => {
+  it("emits run.completed with output and token usage", async () => {
     const res = sseResponse([
-      'event: hermes.tool.progress\ndata: {"tool":"search","status":"started","call_id":"c1"}\n\n',
-      'event: hermes.tool.progress\ndata: {"tool":"search","status":"finished","call_id":"c1"}\n\n',
-      "data: [DONE]\n\n",
+      'data: {"event":"run.completed","run_id":"r1","timestamp":1000,"output":"Final answer","usage":{"input_tokens":150,"output_tokens":320,"total_tokens":470}}\n\n',
     ]);
-    const events: ToolProgressPayload[] = [];
-    await consumeRunEvents(res, { onToolProgress: (e) => events.push(e) });
-    expect(events).toHaveLength(2);
-    expect(events[0]!.status).toBe("started");
-    expect(events[0]!.callId).toBe("c1");
-    expect(events[1]!.status).toBe("finished");
-  });
-
-  it("ignores tool progress with missing required fields", async () => {
-    const res = sseResponse([
-      'event: hermes.tool.progress\ndata: {"status":"started"}\n\n',
-      "data: [DONE]\n\n",
-    ]);
-    const events: ToolProgressPayload[] = [];
-    await consumeRunEvents(res, { onToolProgress: (e) => events.push(e) });
-    expect(events).toHaveLength(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Run lifecycle events
-// ---------------------------------------------------------------------------
-
-describe("consumeRunEvents — run lifecycle", () => {
-  it("emits run.queued and run.running lifecycle events", async () => {
-    const res = sseResponse([
-      'event: run.queued\ndata: {"id":"r1","status":"queued"}\n\n',
-      'event: run.running\ndata: {"id":"r1","status":"running"}\n\n',
-      'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
-      "data: [DONE]\n\n",
-    ]);
-    const statuses: RunLifecyclePayload[] = [];
-    const outcome = await consumeRunEvents(res, { onRunStatus: (p) => statuses.push(p) });
-    expect(outcome.kind).toBe("ok");
-    expect(statuses).toHaveLength(2);
-    expect(statuses[0]!.status).toBe("queued");
-    expect(statuses[1]!.status).toBe("running");
-  });
-
-  it("run.completed ends the stream with ok outcome", async () => {
-    const res = sseResponse([
-      'data: {"choices":[{"delta":{"content":"done"}}]}\n\n',
-      'event: run.completed\ndata: {"id":"r1","status":"completed"}\n\n',
-    ]);
-    const deltas: string[] = [];
-    const statuses: RunLifecyclePayload[] = [];
+    let payload: any;
     const outcome = await consumeRunEvents(res, {
-      onTextDelta: (d) => deltas.push(d),
-      onRunStatus: (p) => statuses.push(p),
+      onRunCompleted: (p) => { payload = p; },
     });
     expect(outcome).toEqual({ kind: "ok" });
-    expect(deltas).toEqual(["done"]);
-    expect(statuses[0]!.status).toBe("completed");
-  });
-
-  it("run.stopped ends the stream with stopped outcome", async () => {
-    const res = sseResponse([
-      'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',
-      'event: run.stopped\ndata: {"id":"r1","status":"stopped"}\n\n',
-    ]);
-    const deltas: string[] = [];
-    const outcome = await consumeRunEvents(res, {
-      onTextDelta: (d) => deltas.push(d),
-    });
-    expect(outcome).toEqual({ kind: "stopped" });
-    expect(deltas).toEqual(["partial"]);
-  });
-
-  it("run.cancelled ends the stream with stopped outcome", async () => {
-    const res = sseResponse([
-      'event: run.cancelled\ndata: {"run_id":"r1","status":"cancelled"}\n\n',
-    ]);
-    const statuses: RunLifecyclePayload[] = [];
-    const outcome = await consumeRunEvents(res, {
-      onRunStatus: (p) => statuses.push(p),
-    });
-    expect(outcome).toEqual({ kind: "stopped" });
-    expect(statuses[0]!.runId).toBe("r1");
-    expect(statuses[0]!.status).toBe("cancelled");
-  });
-
-  it("run.failed ends the stream with error outcome and error message", async () => {
-    const res = sseResponse([
-      'event: run.failed\ndata: {"id":"r1","status":"failed","error":"tool crashed"}\n\n',
-    ]);
-    const statuses: RunLifecyclePayload[] = [];
-    const outcome = await consumeRunEvents(res, {
-      onRunStatus: (p) => statuses.push(p),
-    });
-    expect(outcome.kind).toBe("error");
-    if (outcome.kind === "error") {
-      expect(outcome.message).toBe("tool crashed");
-    }
-    expect(statuses[0]!.error).toBe("tool crashed");
-  });
-
-  it("run.failed without error message uses generic message", async () => {
-    const res = sseResponse([
-      'event: run.failed\ndata: {"id":"r1","status":"failed"}\n\n',
-    ]);
-    const outcome = await consumeRunEvents(res, {});
-    expect(outcome.kind).toBe("error");
-  });
-
-  it("run.completed takes precedence over later [DONE] — resolves once with ok", async () => {
-    const res = sseResponse([
-      'event: run.completed\ndata: {"id":"r1"}\n\n',
-      "data: [DONE]\n\n",
-    ]);
-    const onEnd = vi.fn();
-    await consumeRunEvents(res, { onEnd });
-    // onEnd must be called exactly once
-    expect(onEnd).toHaveBeenCalledTimes(1);
-    expect(onEnd).toHaveBeenCalledWith({ kind: "ok" });
+    expect(payload.output).toBe("Final answer");
+    expect(payload.usage?.total_tokens).toBe(470);
   });
 });
 
 // ---------------------------------------------------------------------------
-// [DONE] sentinel (legacy / chat-compatible streams)
+// Run failure
 // ---------------------------------------------------------------------------
 
-describe("consumeRunEvents — [DONE] sentinel", () => {
-  it("resolves ok on [DONE] when no terminal run event precedes it", async () => {
+describe("consumeRunEvents — run failure", () => {
+  it("emits run.failed with error message", async () => {
     const res = sseResponse([
-      'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n',
-      "data: [DONE]\n\n",
+      'data: {"event":"run.failed","run_id":"r1","timestamp":1000,"error":"agent crashed"}\n\n',
     ]);
-    const outcome = await consumeRunEvents(res, {});
-    expect(outcome).toEqual({ kind: "ok" });
+    let status: any;
+    const outcome = await consumeRunEvents(res, {
+      onRunStatus: (p) => { status = p; },
+    });
+    expect(outcome.kind).toBe("error");
+    expect(status.status).toBe("failed");
+    expect(status.error).toBe("agent crashed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Run cancellation
+// ---------------------------------------------------------------------------
+
+describe("consumeRunEvents — run cancellation", () => {
+  it("emits run.cancelled on stop request", async () => {
+    const res = sseResponse([
+      'data: {"event":"run.cancelled","run_id":"r1","timestamp":1000}\n\n',
+    ]);
+    let status: any;
+    const outcome = await consumeRunEvents(res, {
+      onRunStatus: (p) => { status = p; },
+    });
+    expect(outcome.kind).toBe("stopped");
+    expect(status.status).toBe("cancelled");
   });
 });
 
@@ -270,32 +219,46 @@ describe("consumeRunEvents — interruptions", () => {
 // ---------------------------------------------------------------------------
 
 describe("consumeRunEvents — onEnd callback", () => {
-  it("calls onEnd with ok when resolved via [DONE]", async () => {
-    const res = sseResponse(["data: [DONE]\n\n"]);
+  it("calls onEnd with ok when stream closes normally", async () => {
+    const res = sseResponse([
+      'data: {"event":"run.completed","run_id":"r1","timestamp":1000,"output":"done"}\n\n',
+      ":\n\n", // stream closed marker
+    ]);
     const onEnd = vi.fn();
     const outcome = await consumeRunEvents(res, { onEnd });
     expect(onEnd).toHaveBeenCalledWith({ kind: "ok" });
     expect(outcome).toEqual({ kind: "ok" });
   });
+});
 
-  it("calls onEnd with stopped for run.stopped", async () => {
+// ---------------------------------------------------------------------------
+// Unknown event types (capture-all observability)
+// ---------------------------------------------------------------------------
+
+describe("consumeRunEvents — unknown event types", () => {
+  it("emits unknown event types via onUnknownEvent", async () => {
     const res = sseResponse([
-      'event: run.stopped\ndata: {"id":"r1"}\n\n',
+      'data: {"event":"custom.event","run_id":"r1","timestamp":1000,"data":"value"}\n\n',
+      'data: {"event":"hermes.custom","run_id":"r1","timestamp":1001,"custom":"payload"}\n\n',
+      'data: {"event":"run.completed","run_id":"r1","timestamp":1002,"output":"done"}\n\n',
     ]);
-    const onEnd = vi.fn();
-    await consumeRunEvents(res, { onEnd });
-    expect(onEnd).toHaveBeenCalledWith({ kind: "stopped" });
+    const unknownEvents: Array<{ name: string; data: string }> = [];
+    const outcome = await consumeRunEvents(res, {
+      onUnknownEvent: (name, data) => unknownEvents.push({ name, data }),
+    });
+    expect(outcome.kind).toBe("ok");
+    expect(unknownEvents).toEqual([
+      { name: "custom.event", data: '{"event":"custom.event","run_id":"r1","timestamp":1000,"data":"value"}' },
+      { name: "hermes.custom", data: '{"event":"hermes.custom","run_id":"r1","timestamp":1001,"custom":"payload"}' },
+    ]);
   });
 
-  it("tolerates malformed JSON in delta frames without throwing", async () => {
+  it("does not emit unknown events if onUnknownEvent is not provided", async () => {
     const res = sseResponse([
-      "data: {not json}\n\n",
-      'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
-      "data: [DONE]\n\n",
+      'data: {"event":"unknown.thing","run_id":"r1","timestamp":1000,"data":"ignored"}\n\n',
+      'data: {"event":"run.completed","run_id":"r1","timestamp":1001,"output":"done"}\n\n',
     ]);
-    const deltas: string[] = [];
-    const outcome = await consumeRunEvents(res, { onTextDelta: (d) => deltas.push(d) });
+    const outcome = await consumeRunEvents(res, {});
     expect(outcome.kind).toBe("ok");
-    expect(deltas).toEqual(["ok"]);
   });
 });

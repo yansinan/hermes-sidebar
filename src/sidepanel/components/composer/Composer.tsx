@@ -48,10 +48,17 @@ export function Composer({ state, controller }: Props) {
     }
   };
 
+  const syncSelectionToGlobal = (el: HTMLTextAreaElement) => {
+    const start = el.selectionStart ?? 0;
+    const end = el.selectionEnd ?? start;
+    controller.setComposerSelection(start, end);
+  };
+
   const onSend = () => {
     if (!canSend) return;
     syncDraftToGlobal();
     void controller.send();
+    setLocalDraft("");
   };
 
   const onStop = () => {
@@ -59,21 +66,34 @@ export function Composer({ state, controller }: Props) {
     controller.stop(activeSessionId);
   };
 
-  // 快捷键处理：Ctrl+Enter 发送，Enter/Shift+Enter 默认换行，Escape 停止流
+  // 快捷键处理：Enter 发送，Ctrl+Enter/Shift+Enter 换行，Escape 停止流
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (composing || e.nativeEvent.isComposing) return;
 
-    // Ctrl+Enter（或 Cmd+Enter 在 Mac）发送消息
-    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+    // Enter 发送消息（不带 Ctrl/Shift/Meta）
+    if (e.key === "Enter" && !e.ctrlKey && !e.shiftKey && !e.metaKey) {
       e.preventDefault();
       onSend();
+    }
+    // Ctrl+Enter（或 Cmd+Enter 在 Mac）或 Shift+Enter 插入换行
+    else if ((e.ctrlKey || e.metaKey || e.shiftKey) && e.key === "Enter") {
+      e.preventDefault();
+      const el = e.currentTarget;
+      const start = el.selectionStart ?? 0;
+      const end = el.selectionEnd ?? 0;
+      const next = localDraft.slice(0, start) + "\n" + localDraft.slice(end);
+      setLocalDraft(next);
+      // 异步更新光标位置
+      setTimeout(() => {
+        el.selectionStart = el.selectionEnd = start + 1;
+        el.focus();
+      }, 0);
     }
     // Escape 在流式响应时停止
     else if (e.key === "Escape" && isStreaming) {
       e.preventDefault();
       onStop();
     }
-    // Enter/Shift+Enter 都走浏览器默认换行行为，无需特殊处理
   };
 
   const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -122,8 +142,7 @@ export function Composer({ state, controller }: Props) {
     models[0]?.id ||
     "—";
   const charCount = localDraft.length;
-  // 快捷键提示：使用 Ctrl+Enter 或 Cmd+Enter 发送
-  const keyShortcut = "Ctrl+Enter";
+  const keyShortcut = "Enter";
 
   return (
     <footer className="composer" aria-label="Compose message">
@@ -132,7 +151,14 @@ export function Composer({ state, controller }: Props) {
         className="composer__input"
         placeholder={placeholder}
         value={localDraft}
-        onChange={e => setLocalDraft(e.currentTarget.value)}
+        onChange={(e) => {
+          const next = e.currentTarget.value;
+          setLocalDraft(next);
+          controller.setDraftInput(next);
+          syncSelectionToGlobal(e.currentTarget);
+        }}
+        onSelect={(e) => syncSelectionToGlobal(e.currentTarget)}
+        onKeyUp={(e) => syncSelectionToGlobal(e.currentTarget)}
         onBlur={syncDraftToGlobal}
         onKeyDown={onKeyDown}
         onPaste={onPaste}

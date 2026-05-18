@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { App } from "../src/sidepanel/App";
-import { createStubController } from "../src/sidepanel/controller-stub";
+import { createStubController, initialStubState } from "../src/sidepanel/controller-stub";
+import { DEFAULT_SETTINGS } from "../src/shared/types/settings";
 
 describe("session drawer", () => {
   it("creates a new draft, sends, and lists the session in the drawer", async () => {
@@ -15,7 +16,7 @@ describe("session drawer", () => {
     const ta = screen.getByPlaceholderText(/ask hermes anything/i);
     fireEvent.change(ta, { target: { value: "first message" } });
     await act(async () => {
-      fireEvent.keyDown(ta, { key: "Enter" });
+      fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
     });
 
     // Open Sessions drawer (the icon-only button labelled "Sessions (1)").
@@ -37,7 +38,7 @@ describe("session drawer", () => {
     const ta = screen.getByPlaceholderText(/ask hermes anything/i);
     fireEvent.change(ta, { target: { value: "hi" } });
     await act(async () => {
-      fireEvent.keyDown(ta, { key: "Enter" });
+      fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
     });
 
     fireEvent.click(screen.getByRole("button", { name: /^sessions \(1\)$/i }));
@@ -59,7 +60,7 @@ describe("session drawer", () => {
     const ta = screen.getByPlaceholderText(/ask hermes anything/i);
     fireEvent.change(ta, { target: { value: "to delete" } });
     await act(async () => {
-      fireEvent.keyDown(ta, { key: "Enter" });
+      fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
     });
 
     fireEvent.click(screen.getByRole("button", { name: /^sessions \(1\)$/i }));
@@ -68,6 +69,49 @@ describe("session drawer", () => {
 
     expect(controller.getState().sessions).toHaveLength(0);
     expect(controller.getState().activeSessionId).toBeNull();
+  });
+
+  it("shows queued/running phase labels in the session list", () => {
+    const seeded = initialStubState({
+      ...DEFAULT_SETTINGS,
+      defaultModelId: "m1",
+    });
+    const now = Date.now();
+    seeded.connectionStatus = { kind: "healthy", lastCheckedAt: now };
+    seeded.models = [{ id: "m1" }];
+    seeded.sessions = [
+      {
+        id: "s-running",
+        profileKey: seeded.activeProfile.key,
+        title: "running session",
+        createdAt: now - 10_000,
+        updatedAt: now,
+        modelId: "m1",
+        messages: [],
+      },
+      {
+        id: "s-queued",
+        profileKey: seeded.activeProfile.key,
+        title: "queued session",
+        createdAt: now - 20_000,
+        updatedAt: now - 1_000,
+        modelId: "m1",
+        messages: [],
+      },
+    ];
+    seeded.activeSessionId = "s-running";
+    seeded.sessionPhases = {
+      "s-running": "running",
+      "s-queued": "queued",
+    };
+
+    const controller = createStubController({ initial: seeded });
+    render(<App controller={controller} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^sessions \(2\)$/i }));
+    const dialog = screen.getByRole("dialog", { name: /sessions/i });
+    expect(within(dialog).getByText("Running")).toBeInTheDocument();
+    expect(within(dialog).getByText("Queued")).toBeInTheDocument();
   });
 });
 

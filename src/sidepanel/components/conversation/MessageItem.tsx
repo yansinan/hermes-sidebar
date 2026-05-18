@@ -11,13 +11,15 @@ interface Props {
 
 export function MessageItem({ sessionId, message, controller }: Props) {
   const role = message.role;
-  const roleLabel = role === "user" ? "You" : role === "assistant" ? "Hermes" : "System";
+  const roleLabel = role === "user" ? "You" : role === "assistant" ? "Hermes" : "Activity";
 
   return (
     <li className={`message message--${role}`}>
-      <div className="message__role" aria-hidden>
-        {roleLabel}
-      </div>
+      {role !== "system" ? (
+        <div className="message__role" aria-hidden>
+          {roleLabel}
+        </div>
+      ) : null}
 
       {role === "assistant" ? (
         <AssistantBody
@@ -32,9 +34,23 @@ export function MessageItem({ sessionId, message, controller }: Props) {
           controller={controller}
         />
       ) : (
-        <div className="message__content">{message.content}</div>
+        <SystemBody content={message.content} />
       )}
     </li>
+  );
+}
+
+function SystemBody({ content }: { content: string }) {
+  const match = content.match(/^(\d{2}:\d{2}:\d{2})\s+(.*)$/s);
+  const time = match?.[1] ?? "";
+  const text = match?.[2] ?? content;
+
+  return (
+    <div className="message__activity" aria-label="Activity event">
+      {time ? <span className="message__activity-time">{time}</span> : null}
+      <span className="message__activity-dot" aria-hidden />
+      <span className="message__activity-text">{text}</span>
+    </div>
   );
 }
 
@@ -125,6 +141,23 @@ function AssistantBody({
           )}
         </div>
       )}
+      <div className="message__meta" aria-label="Assistant transport metadata">
+        {formatAssistantMeta(message)}
+      </div>
     </div>
   );
+}
+
+function formatAssistantMeta(message: AssistantMessage): string {
+  const d = new Date(message.createdAt);
+  const yy = String(d.getFullYear()).slice(-2);
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const min = String(d.getMinutes()).padStart(2, "0");
+  const ts = `${yy}/${mm}/${dd} ${hh}:${min}`;
+  if (message.responseChannel) {
+    return `${ts} from ${message.responseChannel}`;
+  }
+  return `${ts} trying ${message.responseChannelTrying ?? "chat/run"}`;
 }

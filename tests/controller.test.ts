@@ -175,6 +175,7 @@ describe("controller send — streaming", () => {
         ]),
     });
     const c = await makeController(fetchImpl);
+    await c.saveSettings({ useRunsApi: false });
     c.setDraftInput("streaming please");
     await c.send();
     const s = c.getState().sessions[0]!;
@@ -192,6 +193,7 @@ describe("controller send — streaming", () => {
         sseStream(['data: {"choices":[{"delta":{"content":"He"}}]}\n\n']),
     });
     const c = await makeController(fetchImpl);
+    await c.saveSettings({ useRunsApi: false });
     c.setDraftInput("go");
     await c.send();
     const s = c.getState().sessions[0]!;
@@ -199,6 +201,255 @@ describe("controller send — streaming", () => {
       badge?: { kind: string };
     };
     expect(assistant.badge?.kind).toBe("connection-interrupted");
+  });
+
+  it("prefers Runs API and streams content from run events", async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/v1/models")) {
+        return jsonResponse(200, { data: [{ id: "m1" }] });
+      }
+      if (url.endsWith("/v1/health") || url.endsWith("/health")) {
+        return jsonResponse(200, {});
+      }
+      if (url.endsWith("/v1/runs")) {
+        return jsonResponse(200, { run_id: "run-1", status: "queued" });
+      }
+      if (url.endsWith("/v1/runs/run-1/events")) {
+        return sseStream([
+          'data: {"event":"reasoning.available","run_id":"run-1","timestamp":1000,"text":"Let me think..."}\n\n',
+          'data: {"event":"message.delta","run_id":"run-1","timestamp":1001,"delta":"Hel"}\n\n',
+          'data: {"event":"message.delta","run_id":"run-1","timestamp":1002,"delta":"lo"}\n\n',
+          'data: {"event":"run.completed","run_id":"run-1","timestamp":1003,"output":"Hello"}\n\n',
+        ]);
+      }
+      if (url.endsWith("/v1/chat/completions")) {
+        throw new Error("chat fallback should not be called");
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const c = await makeController(fetchImpl as unknown as ReturnType<typeof makeFetch>);
+    const seenPhases = new Set<string>();
+    const unsubscribe = c.subscribe((state) => {
+      const id = state.activeSessionId;
+      if (!id) return;
+      const phase = state.sessionPhases[id];
+      if (phase) seenPhases.add(phase);
+    });
+
+    c.setDraftInput("runs please");
+    await c.send();
+    unsubscribe();
+
+    const session = c.getState().sessions[0]!;
+    const assistant = session.messages.find((m) => m.role === "assistant")! as {
+      content: string;
+      streaming: boolean;
+      responseChannel?: string;
+    };
+    expect(assistant.content).toBe("Hello");
+    expect(assistant.streaming).toBe(false);
+    expect(assistant.responseChannel).toBe("runs");
+    expect(seenPhases.has("queued") || seenPhases.has("running")).toBe(true);
+  });
+
+  it("falls back to chat when Runs endpoint is unavailable", async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/v1/models")) {
+        return jsonResponse(200, { data: [{ id: "m1" }] });
+      }
+      if (url.endsWith("/v1/health") || url.endsWith("/health")) {
+        return jsonResponse(200, {});
+      }
+      if (url.endsWith("/v1/runs")) {
+        return new Response(null, { status: 404 });
+      }
+      if (url.endsWith("/v1/chat/completions")) {
+        return sseStream([
+          'data: {"choices":[{"delta":{"content":"Fallback"}}]}\n\n',
+          'data: {"choices":[{"delta":{"content":" ok"}}]}\n\n',
+          "data: [DONE]\n\n",
+        ]);
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const c = await makeController(fetchImpl as unknown as ReturnType<typeof makeFetch>);
+    c.setDraftInput("runs only please");
+    await c.send();
+
+    const urls = fetchImpl.mock.calls.map((call) => String(call[0]));
+    expect(urls.some((u) => u.endsWith("/v1/runs"))).toBe(true);
+    expect(urls.some((u) => u.endsWith("/v1/chat/completions"))).toBe(true);
+
+    const session = c.getState().sessions[0]!;
+    const assistant = session.messages.find((m) => m.role === "assistant")! as {
+      content: string;
+      badge?: { kind: string };
+      responseChannel?: string;
+    };
+    expect(assistant.content).toBe("Fallback ok");
+    expect(assistant.badge).toBeUndefined();
+    expect(assistant.responseChannel).toBe("chat");
+  });
+
+  it("keeps runs result as interrupted when events end and polled run status is failed", async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/v1/models")) {
+        return jsonResponse(200, { data: [{ id: "m1" }] });
+      }
+      if (url.endsWith("/v1/health") || url.endsWith("/health")) {
+        return jsonResponse(200, {});
+      }
+      if (url.endsWith("/v1/runs")) {
+        return jsonResponse(200, { run_id: "run-2", status: "queued" });
+      }
+      if (url.endsWith("/v1/runs/run-2/events")) {
+        // Non-terminal lifecycle only, then EOF => interrupted.
+        return sseStream([
+          'data: {"event":"reasoning.available","run_id":"run-2","timestamp":1000,"text":"Processing..."}\n\n',
+        ]);
+      }
+      if (url.endsWith("/v1/runs/run-2")) {
+        return jsonResponse(200, {
+          object: "hermes.run",
+          run_id: "run-2",
+          status: "failed",
+          output: "",
+        });
+      }
+      if (url.endsWith("/v1/chat/completions")) {
+        throw new Error("chat fallback should not be called");
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const c = await makeController(fetchImpl as unknown as ReturnType<typeof makeFetch>);
+    c.setDraftInput("runs eof");
+    await c.send();
+
+    const urls = fetchImpl.mock.calls.map((call) => String(call[0]));
+    expect(urls.some((u) => u.endsWith("/v1/runs/run-2/events"))).toBe(true);
+    expect(urls.some((u) => u.endsWith("/v1/runs/run-2"))).toBe(true);
+    expect(urls.some((u) => u.endsWith("/v1/chat/completions"))).toBe(false);
+
+    const session = c.getState().sessions[0]!;
+    const assistant = session.messages.find((m) => m.role === "assistant")! as {
+      content: string;
+      badge?: { kind: string };
+      responseChannel?: string;
+    };
+    expect(assistant.content).toBe("");
+    expect(assistant.badge?.kind).toBe("connection-interrupted");
+    expect(assistant.responseChannel).toBe("runs");
+  });
+
+  it("waits for terminal run status instead of deciding from events timeout", async () => {
+    let pollCount = 0;
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/v1/models")) {
+        return jsonResponse(200, { data: [{ id: "m1" }] });
+      }
+      if (url.endsWith("/v1/health") || url.endsWith("/health")) {
+        return jsonResponse(200, {});
+      }
+      if (url.endsWith("/v1/runs")) {
+        return jsonResponse(200, { run_id: "run-4", status: "started" });
+      }
+      if (url.endsWith("/v1/runs/run-4/events")) {
+        return sseStream([
+          'data: {"event":"tool.started","run_id":"run-4","timestamp":1000,"tool":"sleep","preview":"5s"}\n\n',
+        ]);
+      }
+      if (url.endsWith("/v1/runs/run-4")) {
+        pollCount += 1;
+        if (pollCount < 3) {
+          return jsonResponse(200, {
+            object: "hermes.run",
+            run_id: "run-4",
+            status: "running",
+          });
+        }
+        return jsonResponse(200, {
+          object: "hermes.run",
+          run_id: "run-4",
+          status: "completed",
+          output: "Eventually done",
+        });
+      }
+      if (url.endsWith("/v1/chat/completions")) {
+        throw new Error("chat fallback should not be called");
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const c = await makeController(fetchImpl as unknown as ReturnType<typeof makeFetch>);
+    c.setDraftInput("wait terminal");
+    await c.send();
+
+    expect(pollCount).toBeGreaterThanOrEqual(3);
+    const session = c.getState().sessions[0]!;
+    const assistant = session.messages.find((m) => m.role === "assistant")! as {
+      content: string;
+      responseChannel?: string;
+      badge?: { kind: string };
+    };
+    expect(assistant.content).toBe("Eventually done");
+    expect(assistant.responseChannel).toBe("runs");
+    expect(assistant.badge).toBeUndefined();
+  });
+
+  it("recovers runs output via getRun when events end interrupted before content", async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/v1/models")) {
+        return jsonResponse(200, { data: [{ id: "m1" }] });
+      }
+      if (url.endsWith("/v1/health") || url.endsWith("/health")) {
+        return jsonResponse(200, {});
+      }
+      if (url.endsWith("/v1/runs")) {
+        return jsonResponse(200, { run_id: "run-3", status: "started" });
+      }
+      if (url.endsWith("/v1/runs/run-3/events")) {
+        return sseStream([
+          'data: {"event":"tool.started","run_id":"run-3","timestamp":1000,"tool":"grep","preview":"pattern"}\n\n',
+        ]);
+      }
+      if (url.endsWith("/v1/runs/run-3")) {
+        return jsonResponse(200, {
+          object: "hermes.run",
+          run_id: "run-3",
+          status: "completed",
+          output: "Recovered",
+        });
+      }
+      if (url.endsWith("/v1/chat/completions")) {
+        throw new Error("chat fallback should not be called");
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const c = await makeController(fetchImpl as unknown as ReturnType<typeof makeFetch>);
+    c.setDraftInput("recover from poll");
+    await c.send();
+
+    const urls = fetchImpl.mock.calls.map((call) => String(call[0]));
+    expect(urls.some((u) => u.endsWith("/v1/runs/run-3/events"))).toBe(true);
+    expect(urls.some((u) => u.endsWith("/v1/runs/run-3"))).toBe(true);
+    expect(urls.some((u) => u.endsWith("/v1/chat/completions"))).toBe(false);
+
+    const session = c.getState().sessions[0]!;
+    const assistant = session.messages.find((m) => m.role === "assistant")! as {
+      content: string;
+      responseChannel?: string;
+    };
+    expect(assistant.content).toBe("Recovered");
+    expect(assistant.responseChannel).toBe("runs");
   });
 });
 

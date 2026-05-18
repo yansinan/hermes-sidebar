@@ -123,6 +123,25 @@ export interface StopRunOptions {
   apiKey?: string;
 }
 
+export interface GetRunOptions {
+  apiKey?: string;
+  signal?: AbortSignal;
+}
+
+export interface RunStateResponse {
+  object?: string;
+  runId: string;
+  status: RunStatus;
+  sessionId?: string;
+  model?: string;
+  output?: string;
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+  };
+}
+
 export class HermesApiClient {
   private baseUrl: string;
   private readonly fetchImpl: FetchFn;
@@ -336,6 +355,75 @@ export class HermesApiClient {
         ...(opts.signal ? { signal: opts.signal } : {}),
       },
     );
+  }
+
+  /**
+   * GET /v1/runs/{runId} — poll current run state for reconnect/dashboards.
+   * On non-2xx throws an `ApiError`-shaped object.
+   */
+  async getRun(runId: string, opts: GetRunOptions = {}): Promise<RunStateResponse> {
+    const headers: Record<string, string> = {
+      Accept: "application/json",
+    };
+    if (opts.apiKey && opts.apiKey.length > 0) {
+      headers["Authorization"] = `Bearer ${opts.apiKey}`;
+    }
+    const res = await this.fetchImpl(
+      joinUrl(this.baseUrl, `/v1/runs/${encodeURIComponent(runId)}`),
+      {
+        method: "GET",
+        headers,
+        credentials: "omit",
+        ...(opts.signal ? { signal: opts.signal } : {}),
+      },
+    );
+    if (!res.ok) throw await this.toApiError(res);
+    const body = (await res.json()) as {
+      object?: unknown;
+      run_id?: unknown;
+      id?: unknown;
+      status?: unknown;
+      session_id?: unknown;
+      model?: unknown;
+      output?: unknown;
+      usage?: {
+        input_tokens?: unknown;
+        output_tokens?: unknown;
+        total_tokens?: unknown;
+      };
+    };
+    const parsedRunId =
+      typeof body?.run_id === "string"
+        ? body.run_id
+        : typeof body?.id === "string"
+          ? body.id
+          : undefined;
+    if (!parsedRunId) {
+      throw { kind: "server-error", message: "runs response missing run_id" } as const;
+    }
+    return {
+      ...(typeof body.object === "string" ? { object: body.object } : {}),
+      runId: parsedRunId,
+      status: (body.status as RunStatus) ?? "started",
+      ...(typeof body.session_id === "string" ? { sessionId: body.session_id } : {}),
+      ...(typeof body.model === "string" ? { model: body.model } : {}),
+      ...(typeof body.output === "string" ? { output: body.output } : {}),
+      ...(body.usage
+        ? {
+            usage: {
+              ...(typeof body.usage.input_tokens === "number"
+                ? { inputTokens: body.usage.input_tokens }
+                : {}),
+              ...(typeof body.usage.output_tokens === "number"
+                ? { outputTokens: body.usage.output_tokens }
+                : {}),
+              ...(typeof body.usage.total_tokens === "number"
+                ? { totalTokens: body.usage.total_tokens }
+                : {}),
+            },
+          }
+        : {}),
+    };
   }
 
   /**

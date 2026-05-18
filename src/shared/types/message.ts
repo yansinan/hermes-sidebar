@@ -37,6 +37,10 @@ export interface AssistantMessage extends BaseMessage {
   role: "assistant";
   /** The model that produced (or is producing) this message. */
   modelId: string;
+  /** 最终回复链路来源：chat completions 或 runs events。 */
+  responseChannel?: "chat" | "runs";
+  /** 连接中链路来源提示：chat stream 或 run events。 */
+  responseChannelTrying?: "chat" | "run";
   /** True while tokens are still arriving. */
   streaming: boolean;
   badge?: MessageBadge & { kind: "stopped" | "connection-interrupted" };

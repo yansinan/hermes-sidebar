@@ -55,6 +55,23 @@ describe("consumeChatStream", () => {
 
   it("surfaces hermes.tool.progress events", async () => {
     const res = sseResponse([
+      'event: hermes.tool.progress\ndata: {"tool":"search","status":"running","toolCallId":"c1","label":"query docs"}\n\n',
+      'event: hermes.tool.progress\ndata: {"tool":"search","status":"completed","toolCallId":"c1"}\n\n',
+      "data: [DONE]\n\n",
+    ]);
+    const events: ToolProgressPayload[] = [];
+    await consumeChatStream(res, {
+      onToolProgress: (e) => events.push(e),
+    });
+    expect(events).toHaveLength(2);
+    expect(events[0]!.status).toBe("running");
+    expect(events[0]!.label).toBe("query docs");
+    expect(events[0]!.callId).toBe("c1");
+    expect(events[1]!.status).toBe("completed");
+  });
+
+  it("normalizes legacy tool progress fields", async () => {
+    const res = sseResponse([
       'event: hermes.tool.progress\ndata: {"tool":"search","status":"started","call_id":"c1"}\n\n',
       'event: hermes.tool.progress\ndata: {"tool":"search","status":"finished","call_id":"c1"}\n\n',
       "data: [DONE]\n\n",
@@ -64,8 +81,8 @@ describe("consumeChatStream", () => {
       onToolProgress: (e) => events.push(e),
     });
     expect(events).toHaveLength(2);
-    expect(events[0]!.status).toBe("started");
-    expect(events[1]!.status).toBe("finished");
+    expect(events[0]!.status).toBe("running");
+    expect(events[1]!.status).toBe("completed");
   });
 
   it("treats EOF before [DONE] as interrupted", async () => {

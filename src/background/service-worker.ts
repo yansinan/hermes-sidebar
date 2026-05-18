@@ -276,8 +276,12 @@ async function streamAiResponse(
       }
     },
     onToolProgress: (payload) => {
-      const status = payload.status === "started" ? "调用中" : "已完成";
-      void notifyUiProcessing(`工具 ${payload.tool} ${status}`);
+      const status = payload.status === "running" ? "调用中" : "已完成";
+      void notifyUiProcessing(
+        payload.status === "running" && payload.label
+          ? `工具 ${payload.tool} ${status}: ${payload.label}`
+          : `工具 ${payload.tool} ${status}`,
+      );
     },
   });
 

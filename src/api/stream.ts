@@ -15,9 +15,12 @@ export type StreamOutcome =
 export interface ToolProgressPayload {
   /** Human-readable tool name. */
   tool: string;
-  status: "started" | "finished";
-  /** Stable id used to match a `finished` to its `started`. */
+  status: "running" | "completed";
+  /** Stable id used to match a `completed` to its `running`. */
   callId?: string;
+  /** Optional preview fields from Hermes progress payload. */
+  label?: string;
+  emoji?: string;
 }
 
 export interface StreamHandlers {
@@ -144,16 +147,31 @@ export async function consumeChatStream(
         const p = payload as {
           tool?: unknown;
           status?: unknown;
+          toolCallId?: unknown;
           call_id?: unknown;
+          label?: unknown;
+          emoji?: unknown;
         };
+        const normalizedStatus =
+          p.status === "running" || p.status === "started"
+            ? "running"
+            : p.status === "completed" || p.status === "finished"
+              ? "completed"
+              : null;
         if (
           typeof p?.tool === "string" &&
-          (p.status === "started" || p.status === "finished")
+          normalizedStatus
         ) {
           const progress: ToolProgressPayload = {
             tool: p.tool,
-            status: p.status,
-            ...(typeof p.call_id === "string" ? { callId: p.call_id } : {}),
+            status: normalizedStatus,
+            ...(typeof p.toolCallId === "string"
+              ? { callId: p.toolCallId }
+              : typeof p.call_id === "string"
+                ? { callId: p.call_id }
+                : {}),
+            ...(typeof p.label === "string" ? { label: p.label } : {}),
+            ...(typeof p.emoji === "string" ? { emoji: p.emoji } : {}),
           };
           handlers.onToolProgress?.(progress);
         }

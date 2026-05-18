@@ -15,7 +15,7 @@
 //   run.stopped              — run was stopped (user- or server-initiated)
 
 import { SseParser, type SseFrame } from "./sse";
-import type { StreamOutcome, ToolProgressPayload } from "./stream";
+import type { StreamOutcome } from "./stream";
 
 export type RunStatus =
   | "started"
@@ -35,26 +35,64 @@ export interface RunLifecyclePayload {
   error?: string;
 }
 
+export interface ToolStartedPayload {
+  runId: string;
+  timestamp: number;
+  tool: string;
+  preview?: string;
+}
+
+export interface ToolCompletedPayload {
+  runId: string;
+  timestamp: number;
+  tool: string;
+  duration: number;
+  error: boolean;
+}
+
+export interface ReasoningAvailablePayload {
+  runId: string;
+  timestamp: number;
+  text: string;
+}
+
+export interface MessageDeltaPayload {
+  runId: string;
+  timestamp: number;
+  delta: string;
+}
+
+export interface RunCompletedPayload {
+  runId: string;
+  timestamp: number;
+  output: string;
+  usage?: {
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+  };
+}
+
 export interface RunEventHandlers {
-  onTextDelta?: (delta: string) => void;
-  onThinkingDelta?: (delta: string) => void;
-  onToolProgress?: (payload: ToolProgressPayload) => void;
-  /** Called for each run lifecycle event: queued, running, completed, etc. */
+  /** Called for streaming message chunks. */
+  onMessageDelta?: (payload: MessageDeltaPayload) => void;
+  /** Called when tool invocation starts. */
+  onToolStarted?: (payload: ToolStartedPayload) => void;
+  /** Called when tool execution completes. */
+  onToolCompleted?: (payload: ToolCompletedPayload) => void;
+  /** Called when intermediate reasoning text is available. */
+  onReasoningAvailable?: (payload: ReasoningAvailablePayload) => void;
+  /** Called when run completes successfully with final output and usage. */
+  onRunCompleted?: (payload: RunCompletedPayload) => void;
+  /** Called for run lifecycle changes (failed, cancelled). */
   onRunStatus?: (payload: RunLifecyclePayload) => void;
   /** Called once with the final outcome when the stream ends for any reason. */
   onEnd?: (outcome: StreamOutcome) => void;
   /** Called at most once with the first captured server session id, if any. */
   onServerSessionRef?: (ref: string) => void;
+  /** Called for any unrecognized event type from the server, ensuring all events are captured. */
+  onUnknownEvent?: (eventName: string, data: string) => void;
 }
-
-const DONE_SENTINEL = "[DONE]";
-
-const TERMINAL_RUN_EVENTS = new Set([
-  "run.completed",
-  "run.failed",
-  "run.cancelled",
-  "run.stopped",
-]);
 
 /**
  * Read and dispatch events from a run event-stream response.
@@ -93,8 +131,6 @@ export async function consumeRunEvents(
   const decoder = new TextDecoder();
   let sawTerminal = false;
   let terminalOutcome: StreamOutcome | null = null;
-  let sawDone = false;
-  let emittedRef = false;
   let aborted = false;
 
   const onAbort = () => {
@@ -111,107 +147,143 @@ export async function consumeRunEvents(
 
   const handleFrames = (frames: SseFrame[]) => {
     for (const f of frames) {
-      // ---- [DONE] sentinel (same as chat) --------------------------------
-      if ((f.event === "message" || f.event === "") && f.data === DONE_SENTINEL) {
-        sawDone = true;
+      // ---- Keepalive and stream closed markers ---------
+      if (f.event === "" && f.data === "keepalive") continue;
+      if (f.event === "" && f.data === "stream closed") {
+        sawTerminal = true;
+        terminalOutcome = { kind: "ok" };
         return;
       }
 
-      // ---- Run lifecycle events -----------------------------------------
-      if (TERMINAL_RUN_EVENTS.has(f.event) || f.event === "run.queued" || f.event === "run.running") {
+      // ---- All events are in data: JSON format, extract event type from payload
+      if (f.event === "" || f.event === "message") {
         let payload: unknown;
         try {
           payload = JSON.parse(f.data);
         } catch {
+          // Unparseable data line—skip
           continue;
         }
-        const p = payload as { id?: unknown; run_id?: unknown; status?: unknown; error?: unknown };
-        const runId =
-          typeof p?.id === "string"
-            ? p.id
-            : typeof p?.run_id === "string"
-              ? p.run_id
-              : "";
-        const status = (p?.status as RunStatus | undefined) ?? eventNameToStatus(f.event);
 
-        handlers.onRunStatus?.({
-          runId,
-          status,
-          ...(typeof p?.error === "string" ? { error: p.error } : {}),
-        });
+        const p = payload as Record<string, unknown>;
+        const eventType = p.event as string | undefined;
 
-        if (TERMINAL_RUN_EVENTS.has(f.event)) {
+        if (!eventType) {
+          // JSON without event field—skip or treat as unknown
+          handlers.onUnknownEvent?.(
+            "(no event field)",
+            f.data.length > 100 ? f.data.substring(0, 100) + "..." : f.data,
+          );
+          continue;
+        }
+
+        // ---- tool.started ----
+        if (eventType === "tool.started") {
+          handlers.onToolStarted?.({
+            runId: typeof p.run_id === "string" ? p.run_id : "",
+            timestamp: typeof p.timestamp === "number" ? p.timestamp : 0,
+            tool: typeof p.tool === "string" ? p.tool : "",
+            preview: typeof p.preview === "string" ? p.preview : undefined,
+          });
+          continue;
+        }
+
+        // ---- tool.completed ----
+        if (eventType === "tool.completed") {
+          handlers.onToolCompleted?.({
+            runId: typeof p.run_id === "string" ? p.run_id : "",
+            timestamp: typeof p.timestamp === "number" ? p.timestamp : 0,
+            tool: typeof p.tool === "string" ? p.tool : "",
+            duration: typeof p.duration === "number" ? p.duration : 0,
+            error: typeof p.error === "boolean" ? p.error : false,
+          });
+          continue;
+        }
+
+        // ---- reasoning.available ----
+        if (eventType === "reasoning.available") {
+          handlers.onReasoningAvailable?.({
+            runId: typeof p.run_id === "string" ? p.run_id : "",
+            timestamp: typeof p.timestamp === "number" ? p.timestamp : 0,
+            text: typeof p.text === "string" ? p.text : "",
+          });
+          continue;
+        }
+
+        // ---- message.delta ----
+        if (eventType === "message.delta") {
+          const delta =
+            typeof p.delta === "string"
+              ? p.delta
+              : typeof p.content === "string"
+                ? p.content
+                : "";
+          if (delta.length > 0) {
+            handlers.onMessageDelta?.({
+              runId: typeof p.run_id === "string" ? p.run_id : "",
+              timestamp: typeof p.timestamp === "number" ? p.timestamp : 0,
+              delta,
+            });
+          }
+          continue;
+        }
+
+        // ---- run.completed ----
+        if (eventType === "run.completed") {
+          const usage = p.usage as Record<string, number> | undefined;
+          handlers.onRunCompleted?.({
+            runId: typeof p.run_id === "string" ? p.run_id : "",
+            timestamp: typeof p.timestamp === "number" ? p.timestamp : 0,
+            output: typeof p.output === "string" ? p.output : "",
+            usage: usage
+              ? {
+                  input_tokens:
+                    typeof usage.input_tokens === "number" ? usage.input_tokens : 0,
+                  output_tokens:
+                    typeof usage.output_tokens === "number" ? usage.output_tokens : 0,
+                  total_tokens:
+                    typeof usage.total_tokens === "number" ? usage.total_tokens : 0,
+                }
+              : undefined,
+          });
           sawTerminal = true;
-          terminalOutcome =
-            f.event === "run.completed"
-              ? { kind: "ok" }
-              : f.event === "run.stopped" || f.event === "run.cancelled"
-                ? { kind: "stopped" }
-                : { kind: "error", status: 0, message: typeof p?.error === "string" ? p.error : "run failed" };
+          terminalOutcome = { kind: "ok" };
           return;
         }
-        continue;
-      }
 
-      // ---- Default delta frames (same as chat) --------------------------
-      if (f.event === "message" || f.event === "") {
-        let delta: unknown;
-        try {
-          delta = JSON.parse(f.data);
-        } catch {
-          continue;
-        }
-        const chunk = delta as {
-          choices?: {
-            delta?: {
-              content?: unknown;
-              reasoning?: unknown;
-              reasoning_content?: unknown;
-              thinking?: unknown;
-            };
-          }[];
-          session_id?: unknown;
-        };
-        const contentRaw = chunk?.choices?.[0]?.delta?.content;
-        if (typeof contentRaw === "string" && contentRaw.length > 0) {
-          handlers.onTextDelta?.(contentRaw);
-        }
-        const thinkingRaw =
-          chunk?.choices?.[0]?.delta?.reasoning_content ??
-          chunk?.choices?.[0]?.delta?.reasoning ??
-          chunk?.choices?.[0]?.delta?.thinking;
-        if (typeof thinkingRaw === "string" && thinkingRaw.length > 0) {
-          handlers.onThinkingDelta?.(thinkingRaw);
-        }
-        if (!emittedRef && typeof chunk?.session_id === "string") {
-          emittedRef = true;
-          handlers.onServerSessionRef?.(chunk.session_id as string);
-        }
-        continue;
-      }
-
-      // ---- hermes.tool.progress ----------------------------------------
-      if (f.event === "hermes.tool.progress") {
-        let payload: unknown;
-        try {
-          payload = JSON.parse(f.data);
-        } catch {
-          continue;
-        }
-        const p = payload as { tool?: unknown; status?: unknown; call_id?: unknown };
-        if (
-          typeof p?.tool === "string" &&
-          (p.status === "started" || p.status === "finished")
-        ) {
-          handlers.onToolProgress?.({
-            tool: p.tool,
-            status: p.status,
-            ...(typeof p.call_id === "string" ? { callId: p.call_id } : {}),
+        // ---- run.failed ----
+        if (eventType === "run.failed") {
+          handlers.onRunStatus?.({
+            runId: typeof p.run_id === "string" ? p.run_id : "",
+            status: "failed",
+            error: typeof p.error === "string" ? p.error : undefined,
           });
+          sawTerminal = true;
+          terminalOutcome = {
+            kind: "error",
+            status: 0,
+            message: typeof p.error === "string" ? p.error : "run failed",
+          };
+          return;
         }
-        continue;
+
+        // ---- run.cancelled ----
+        if (eventType === "run.cancelled") {
+          handlers.onRunStatus?.({
+            runId: typeof p.run_id === "string" ? p.run_id : "",
+            status: "cancelled",
+          });
+          sawTerminal = true;
+          terminalOutcome = { kind: "stopped" };
+          return;
+        }
+
+        // ---- Unknown event type in JSON ---
+        handlers.onUnknownEvent?.(
+          eventType,
+          f.data.length > 100 ? f.data.substring(0, 100) + "..." : f.data,
+        );
       }
-      // Other event types are ignored.
     }
   };
 
@@ -221,7 +293,7 @@ export async function consumeRunEvents(
       if (done) break;
       const chunkText = decoder.decode(value, { stream: true });
       handleFrames(parser.push(chunkText));
-      if (sawDone || sawTerminal) break;
+      if (sawTerminal) break;
     }
     const trailing = decoder.decode();
     if (trailing.length > 0) handleFrames(parser.push(trailing));
@@ -251,23 +323,7 @@ export async function consumeRunEvents(
     handlers.onEnd?.(terminalOutcome);
     return terminalOutcome;
   }
-  if (sawDone) {
-    const outcome: StreamOutcome = { kind: "ok" };
-    handlers.onEnd?.(outcome);
-    return outcome;
-  }
   const outcome: StreamOutcome = { kind: "interrupted", reason: "eof" };
   handlers.onEnd?.(outcome);
   return outcome;
-}
-
-function eventNameToStatus(event: string): RunStatus {
-  if (event === "run.started") return "started";
-  if (event === "run.stopping") return "stopping";
-  if (event === "run.completed") return "completed";
-  if (event === "run.failed") return "failed";
-  if (event === "run.cancelled") return "cancelled";
-  if (event === "run.stopped") return "stopped";
-  if (event === "run.running") return "running";
-  return "queued";
 }

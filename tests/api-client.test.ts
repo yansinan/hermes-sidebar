@@ -302,3 +302,39 @@ describe("HermesApiClient.stopRun", () => {
     expect(headers["Authorization"]).toBe("Bearer sk-y");
   });
 });
+
+describe("HermesApiClient.getRun", () => {
+  it("gets /v1/runs/{id} and maps run state fields", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        object: "hermes.run",
+        run_id: "run-9",
+        status: "completed",
+        session_id: "space-session",
+        model: "hermes-agent",
+        output: "Done.",
+        usage: { input_tokens: 50, output_tokens: 200, total_tokens: 250 },
+      }),
+    );
+    const c = new HermesApiClient({ baseUrl: "http://h", fetchImpl });
+    const state = await c.getRun("run-9");
+    expect(state.runId).toBe("run-9");
+    expect(state.status).toBe("completed");
+    expect(state.sessionId).toBe("space-session");
+    expect(state.usage?.totalTokens).toBe(250);
+    const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://h/v1/runs/run-9");
+    expect(init.method).toBe("GET");
+  });
+
+  it("attaches Authorization when apiKey provided", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse(200, { run_id: "run-1", status: "started" }),
+    );
+    const c = new HermesApiClient({ baseUrl: "http://h", fetchImpl });
+    await c.getRun("run-1", { apiKey: "sk-z" });
+    const headers = (fetchImpl.mock.calls[0]![1] as RequestInit)
+      .headers as Record<string, string>;
+    expect(headers["Authorization"]).toBe("Bearer sk-z");
+  });
+});

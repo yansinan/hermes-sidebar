@@ -38,4 +38,9 @@ export type SessionOrDraft = Session | DraftSession;
  * The "streaming" phase is per-session, not global: two different sessions can
  * be streaming at the same time (docs/product-design.md §7.6).
  */
-export type SessionPhase = "idle" | "sending" | "streaming";
+export type SessionPhase =
+  | "idle"
+  | "sending"
+  | "queued"
+  | "running"
+  | "streaming";

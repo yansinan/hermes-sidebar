@@ -46,6 +46,9 @@ export function SettingsDrawer({ state, controller, onClose }: Props) {
   const [streamingEnabled, setStreamingEnabled] = useState(
     settings.streamingEnabled,
   );
+  const [useRunsApi, setUseRunsApi] = useState(
+    settings.useRunsApi ?? true,
+  );
   const [reuseServerSession, setReuseServerSession] = useState(
     settings.reuseServerSession,
   );
@@ -141,6 +144,7 @@ export function SettingsDrawer({ state, controller, onClose }: Props) {
       apiKey,
       enterBehavior,
       streamingEnabled,
+      useRunsApi,
       reuseServerSession,
       sendIdempotencyKey,
       showReadabilityContextMenu: showContextMenu,
@@ -286,6 +290,15 @@ export function SettingsDrawer({ state, controller, onClose }: Props) {
               onChange={(e) => setStreamingEnabled(e.currentTarget.checked)}
             />
             <span>Stream responses as they arrive</span>
+          </label>
+
+          <label className="field field--checkbox">
+            <input
+              type="checkbox"
+              checked={useRunsApi}
+              onChange={(e) => setUseRunsApi(e.currentTarget.checked)}
+            />
+            <span>Use Runs API for streaming (recommended)</span>
           </label>
         </section>
 

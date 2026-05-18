@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { AppController, AppState } from "../../../shared/app-state";
-import type { Session } from "../../../shared/types/session";
+import type { Session, SessionPhase } from "../../../shared/types/session";
 import { Overlay } from "./Overlay";
 
 interface Props {
@@ -42,7 +42,7 @@ export function SessionDrawer({ state, controller, onClose }: Props) {
                 key={s.id}
                 session={s}
                 isActive={s.id === activeSessionId}
-                isStreaming={sessionPhases[s.id] === "streaming"}
+                phase={sessionPhases[s.id]}
                 onSelect={() => {
                   controller.switchSession(s.id);
                   onClose();
@@ -61,14 +61,14 @@ export function SessionDrawer({ state, controller, onClose }: Props) {
 function SessionRow({
   session,
   isActive,
-  isStreaming,
+  phase,
   onSelect,
   onRename,
   onDelete,
 }: {
   session: Session;
   isActive: boolean;
-  isStreaming: boolean;
+  phase?: SessionPhase;
   onSelect: () => void;
   onRename: (title: string) => void;
   onDelete: () => void;
@@ -145,9 +145,9 @@ function SessionRow({
       >
         <span className="session-row__title">{session.title}</span>
         <span className="session-row__meta">
-          {isStreaming && (
-            <span className="session-row__streaming" aria-label="Streaming">
-              •••
+          {phase && phase !== "idle" && (
+            <span className="session-row__phase" aria-label={`Phase ${phase}`}>
+              {toPhaseLabel(phase)}
             </span>
           )}
           <span className="session-row__time">{formatRelative(session.updatedAt)}</span>
@@ -198,6 +198,14 @@ function SessionRow({
       </div>
     </li>
   );
+}
+
+function toPhaseLabel(phase: SessionPhase): string {
+  if (phase === "sending") return "Sending";
+  if (phase === "queued") return "Queued";
+  if (phase === "running") return "Running";
+  if (phase === "streaming") return "Streaming";
+  return "Idle";
 }
 
 function formatRelative(ts: number): string {

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { AppController, AppState } from "../../../shared/app-state";
 import { BUILD_INFO } from "../../../shared/types/build-info";
 import { StatusDot } from "./StatusDot";
@@ -15,6 +16,7 @@ export function TopBar({
   onOpenSessions,
   onOpenSettings,
 }: Props) {
+  const [debugExpanded, setDebugExpanded] = useState(false);
   const {
     activeProfile,
     connectionStatus,
@@ -22,6 +24,8 @@ export function TopBar({
     settings,
     sessions,
     sessionPhases,
+    runtimeDebug,
+    runtimeDebugLog,
   } = state;
 
   const activeSession = state.activeSessionId
@@ -42,12 +46,15 @@ export function TopBar({
   }
 
   const anyStreaming = Object.values(sessionPhases).some(
-    (p) => p === "streaming",
+    (p) => p === "sending" || p === "queued" || p === "running" || p === "streaming",
   );
   const sessionCount = sessions.length;
 
+  const debugLog = runtimeDebugLog ?? [];
+
   return (
-    <header className="top-bar" role="banner">
+    <div className="top-bar-stack">
+      <header className="top-bar" role="banner">
       <StatusDot
         status={connectionStatus}
         hostShort={activeProfile.hostShort}
@@ -136,15 +143,59 @@ export function TopBar({
         )}
       </button>
 
-      <button
-        type="button"
-        className="icon-button"
-        onClick={onOpenSettings}
-        aria-label="Settings"
-        title="Settings"
-      >
-        <span aria-hidden>⚙</span>
-      </button>
-    </header>
+        <button
+          type="button"
+          className="icon-button"
+          onClick={onOpenSettings}
+          aria-label="Settings"
+          title="Settings"
+        >
+          <span aria-hidden>⚙</span>
+        </button>
+      </header>
+
+      {(settings.debugPageCaptureTrace ?? false) && runtimeDebug && (
+        <div className="runtime-debug" role="status" aria-live="polite">
+          <div className="runtime-debug__head">
+            <span className="runtime-debug__label">Debug</span>
+            <span className="runtime-debug__text">
+              {new Date(runtimeDebug.at).toLocaleTimeString("zh-CN", {
+                hour12: false,
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+              })}
+              {" · "}
+              {runtimeDebug.text}
+            </span>
+            <button
+              type="button"
+              className="runtime-debug__toggle"
+              aria-expanded={debugExpanded}
+              onClick={() => setDebugExpanded((v) => !v)}
+            >
+              {debugExpanded ? "收起" : `展开(${debugLog.length})`}
+            </button>
+          </div>
+          {debugExpanded && debugLog.length > 0 && (
+            <ol className="runtime-debug__list" aria-label="Runtime debug log">
+              {[...debugLog].reverse().map((item, idx) => (
+                <li key={`${item.at}-${idx}`} className="runtime-debug__item">
+                  <span className="runtime-debug__time">
+                    {new Date(item.at).toLocaleTimeString("zh-CN", {
+                      hour12: false,
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      second: "2-digit",
+                    })}
+                  </span>
+                  <span className="runtime-debug__msg">{item.text}</span>
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+      )}
+    </div>
   );
 }

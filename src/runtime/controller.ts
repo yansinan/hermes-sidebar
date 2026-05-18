@@ -34,7 +34,8 @@ import {
   type ChatCompletionsRequest,
 } from "../api/client";
 import type { ApiError } from "../api/errors";
-import { consumeChatStream } from "../api/stream";
+import { consumeChatStream, type StreamOutcome } from "../api/stream";
+import { consumeRunEvents } from "../api/runs";
 
 import {
   createStorageGateway,
@@ -56,6 +57,8 @@ interface InFlight {
   sessionId: string;
   userMessageId: string;
   idempotencyKey: string;
+  runId?: string;
+  transport?: "chat" | "runs";
 }
 
 const MAX_TITLE_LENGTH = 64;
@@ -124,6 +127,7 @@ export class RealController implements AppController {
         status: "idle",
       },
       composerSelection: { start: 0, end: 0 },
+      runtimeDebugLog: [],
     };
   }
 
@@ -223,6 +227,10 @@ export class RealController implements AppController {
       content: "",
       createdAt: now,
       modelId,
+      responseChannelTrying:
+        this.state.settings.streamingEnabled && this.state.settings.useRunsApi !== false
+          ? "run"
+          : "chat",
       streaming: true,
     };
     const updatedSession: Session = {
@@ -242,6 +250,12 @@ export class RealController implements AppController {
   stop(sessionId: string): void {
     const handle = this.inFlight.get(sessionId);
     if (!handle) return;
+    this.setRuntimeDebug(`stop requested: session=${sessionId}`);
+    if (handle.runId) {
+      const apiKey = this.state.settings.apiKey || undefined;
+      this.setRuntimeDebug(`stop run request sent: run_id=${handle.runId}`);
+      void this.api.stopRun(handle.runId, { apiKey }).catch(() => undefined);
+    }
     handle.controller.abort();
   }
 
@@ -263,6 +277,10 @@ export class RealController implements AppController {
       content: "",
       createdAt: Date.now(),
       modelId: this.currentModelId() ?? session.modelId,
+      responseChannelTrying:
+        this.state.settings.streamingEnabled && this.state.settings.useRunsApi !== false
+          ? "run"
+          : "chat",
       streaming: true,
     };
     // Keep everything before the failed user message, replace the user
@@ -304,6 +322,10 @@ export class RealController implements AppController {
       content: "",
       createdAt: Date.now(),
       modelId: this.currentModelId() ?? session.modelId,
+      responseChannelTrying:
+        this.state.settings.streamingEnabled && this.state.settings.useRunsApi !== false
+          ? "run"
+          : "chat",
       streaming: true,
     };
     // Re-use a synthetic "user" message marker: the last user message in the
@@ -842,6 +864,18 @@ export class RealController implements AppController {
     this.patch({ banners: [...this.state.banners, banner] });
   }
 
+  private setRuntimeDebug(text: string): void {
+    if (!(this.state.settings.debugPageCaptureTrace ?? false)) return;
+    // 保留最近 40 条，避免长会话导致 UI 和内存持续增长。
+    const nextEntry = { at: Date.now(), text };
+    const prev = this.state.runtimeDebugLog ?? [];
+    const nextLog = [...prev, nextEntry].slice(-40);
+    this.patch({
+      runtimeDebug: nextEntry,
+      runtimeDebugLog: nextLog,
+    });
+  }
+
   private async persist(): Promise<void> {
     await this.gateway.saveProfile(this.state.activeProfile.key, {
       sessions: this.state.sessions,
@@ -928,9 +962,13 @@ export class RealController implements AppController {
     };
     this.inFlight.set(sessionId, inflight);
     this.setSessionPhase(sessionId, "sending");
+    this.setRuntimeDebug(
+      `send start: session=${sessionId} streaming=${this.state.settings.streamingEnabled} runs=${this.state.settings.useRunsApi !== false}`,
+    );
 
     const apiKey = this.state.settings.apiKey || undefined;
     const streaming = this.state.settings.streamingEnabled;
+    const useRunsApi = this.state.settings.useRunsApi !== false;
     const renderedMessages = session.messages
       .filter((m) => m.id !== assistantMessage.id)
       .map((m) => ({ ...m, content: this.renderTemplateVariables(m.content) }));
@@ -965,16 +1003,276 @@ export class RealController implements AppController {
 
     try {
       if (!streaming) {
+        inflight.transport = "chat";
+        this.setAssistantTryingChannel(sessionId, assistantMessage.id, "chat");
+        this.setRuntimeDebug("transport=chat-completion (non-streaming)");
         const done = await this.api.completeOnce(req);
         this.finalizeStreamingMessage(sessionId, assistantMessage.id, {
           content: done.content,
           outcome: "ok",
+          responseChannel: "chat",
           ...(done.serverSessionRef ? { serverSessionRef: done.serverSessionRef } : {}),
         });
         await this.persist();
         return;
       }
 
+      const runReq = {
+        model: assistantMessage.modelId,
+        messages: wireMessages,
+        signal: controller.signal,
+        ...(apiKey ? { apiKey } : {}),
+        ...(this.state.settings.sendIdempotencyKey
+          ? { idempotencyKey: userMessage.idempotencyKey }
+          : {}),
+        ...(this.state.settings.reuseServerSession && session.serverSessionRef
+          ? { sessionId: session.serverSessionRef }
+          : {}),
+      };
+
+      if (useRunsApi) {
+        try {
+          inflight.transport = "runs";
+          this.setAssistantTryingChannel(sessionId, assistantMessage.id, "run");
+          const emitRunEvent = (line: string) => {
+            this.pushRunEventMessage(sessionId, assistantMessage.id, line);
+          };
+          this.setRuntimeDebug("transport=runs createRun");
+          const created = await this.api.createRun(runReq);
+          inflight.runId = created.runId;
+          this.setRuntimeDebug(`runs created: run_id=${created.runId} status=${created.status}`);
+          emitRunEvent("任务已创建，准备执行");
+
+          const createdPhase = phaseFromRunStatus(created.status);
+          if (createdPhase) {
+            this.setSessionPhase(sessionId, createdPhase);
+          }
+
+          let firstActivitySeen = false;
+          let heartbeatCount = 0;
+          const heartbeatIntervalMs = 15_000;
+          heartbeatTimer = setInterval(() => {
+            if (firstActivitySeen) return;
+            heartbeatCount += 1;
+            const elapsedSeconds = (heartbeatCount * heartbeatIntervalMs) / 1000;
+            const statusText =
+              elapsedSeconds < 60
+                ? `模型排队中，已等待 ${elapsedSeconds} 秒...`
+                : `模型排队中，已等待 ${Math.round(elapsedSeconds / 60)} 分钟...`;
+            void notifyExtractionProcessing(statusText);
+          }, heartbeatIntervalMs);
+
+          void notifyExtractionProcessing("Run 已创建，等待事件流...");
+          this.setRuntimeDebug(`transport=runs events open run_id=${created.runId}`);
+          emitRunEvent("已连接执行事件流");
+          const runEventsRes = await this.api.openRunEvents(created.runId, {
+            ...(apiKey ? { apiKey } : {}),
+            signal: controller.signal,
+          });
+          if (!runEventsRes.ok && isRunsFallbackStatus(runEventsRes.status)) {
+            throw {
+              kind: runEventsRes.status === 404 ? "not-found" : "client-error",
+              status: runEventsRes.status,
+              message: "runs events endpoint unavailable",
+            } satisfies ApiError;
+          }
+
+          let streamedContent = "";
+          let runOutcome: StreamOutcome | undefined;
+          await consumeRunEvents(
+            runEventsRes,
+            {
+              onMessageDelta: (p) => {
+                if (!firstActivitySeen) {
+                  firstActivitySeen = true;
+                  void notifyExtractionProcessing("模型正在生成回复...");
+                }
+                streamedContent += p.delta;
+                this.appendStreamDelta(sessionId, assistantMessage.id, p.delta);
+              },
+              onToolStarted: (p) => {
+                if (!firstActivitySeen) {
+                  firstActivitySeen = true;
+                  void notifyExtractionProcessing(`工具 ${p.tool} 调用中...`);
+                }
+                this.setRuntimeDebug(`runs tool started: ${p.tool} ${p.preview || ""}`);
+                emitRunEvent(
+                  p.preview && p.preview.trim().length > 0
+                    ? `调用工具：${p.tool}（${p.preview}）`
+                    : `调用工具：${p.tool}`,
+                );
+              },
+              onToolCompleted: (p) => {
+                this.setRuntimeDebug(
+                  `runs tool completed: ${p.tool} duration=${p.duration.toFixed(3)}s error=${p.error}`,
+                );
+                emitRunEvent(p.error ? `工具失败：${p.tool}` : `工具完成：${p.tool}`);
+                void notifyExtractionProcessing(`工具 ${p.tool} 已完成`);
+              },
+              onReasoningAvailable: (p) => {
+                if (!firstActivitySeen) {
+                  firstActivitySeen = true;
+                  void notifyExtractionProcessing("模型思考中...");
+                }
+                this.setRuntimeDebug(`runs reasoning available: +${p.text.length} chars`);
+                emitRunEvent("模型正在分析问题");
+                // Optionally append reasoning to conversation if desired
+              },
+              onRunCompleted: (p) => {
+                if (!firstActivitySeen) {
+                  firstActivitySeen = true;
+                  void notifyExtractionProcessing("模型已返回结果...");
+                }
+                this.setRuntimeDebug(
+                  `runs completed: output=${p.output.length} chars, tokens=${p.usage?.total_tokens || 0}`,
+                );
+                emitRunEvent("回复生成完成");
+                if (streamedContent.length === 0 && p.output.length > 0) {
+                  streamedContent = p.output;
+                  this.appendStreamDelta(sessionId, assistantMessage.id, p.output);
+                } else if (
+                  p.output.length > streamedContent.length &&
+                  p.output.startsWith(streamedContent)
+                ) {
+                  const suffix = p.output.slice(streamedContent.length);
+                  if (suffix.length > 0) {
+                    streamedContent += suffix;
+                    this.appendStreamDelta(sessionId, assistantMessage.id, suffix);
+                  }
+                }
+              },
+              onRunStatus: (p) => {
+                const phase = phaseFromRunStatus(p.status);
+                if (phase) this.setSessionPhase(sessionId, phase);
+                this.setRuntimeDebug(
+                  `runs status: run_id=${p.runId || created.runId} status=${p.status}`,
+                );
+                if (p.status === "failed") {
+                  emitRunEvent("任务执行失败");
+                } else if (p.status === "cancelled") {
+                  emitRunEvent("任务已取消");
+                }
+              },
+              onServerSessionRef: (ref) => this.attachServerSessionRef(sessionId, ref),
+              onUnknownEvent: (eventName, _data) => {
+                this.setRuntimeDebug(`runs unknown event: ${eventName}`);
+                if (eventName === "approval.request") {
+                  emitRunEvent("等待你确认操作权限");
+                  return;
+                }
+                if (eventName === "approval.responded") {
+                  emitRunEvent("已收到权限确认，继续执行");
+                  return;
+                }
+                emitRunEvent(`收到事件：${eventName}`);
+              },
+              onEnd: (outcome) => {
+                runOutcome = outcome;
+                clearInterval(heartbeatTimer);
+                if (outcome.kind === "ok") {
+                  emitRunEvent("执行结束");
+                } else if (outcome.kind === "stopped") {
+                  emitRunEvent("已停止执行");
+                } else if (outcome.kind === "interrupted") {
+                  emitRunEvent("连接中断，正在恢复");
+                }
+              },
+            },
+            controller.signal,
+          );
+
+          const outcome = runOutcome ?? { kind: "interrupted", reason: "no outcome" };
+          this.setRuntimeDebug(`runs end: kind=${outcome.kind}`);
+          if (outcome.kind === "interrupted") {
+            this.setRuntimeDebug(`runs interrupted: polling terminal state run_id=${created.runId}`);
+            const resolved = await this.waitForRunTerminalState(
+              created.runId,
+              apiKey,
+              controller.signal,
+              (line) => emitRunEvent(line),
+            );
+            if (resolved) {
+              if (resolved.content && resolved.content !== streamedContent) {
+                emitRunEvent("已从任务结果恢复回复内容");
+                if (
+                  resolved.content.length > streamedContent.length &&
+                  resolved.content.startsWith(streamedContent)
+                ) {
+                  const suffix = resolved.content.slice(streamedContent.length);
+                  this.appendStreamDelta(sessionId, assistantMessage.id, suffix);
+                } else {
+                  this.appendStreamDelta(sessionId, assistantMessage.id, resolved.content);
+                }
+                streamedContent = resolved.content;
+              }
+              this.finalizeStreamingMessage(sessionId, assistantMessage.id, {
+                content: streamedContent,
+                outcome: resolved.outcome,
+                responseChannel: "runs",
+              });
+              this.setRuntimeDebug(`runs resolved via getRun: ${resolved.outcome}`);
+              await this.persist();
+              return;
+            }
+            this.setRuntimeDebug("runs interrupted and unresolved after polling");
+            throw {
+              kind: "network",
+              message: "runs stream ended before terminal state",
+            } satisfies ApiError;
+          }
+
+          if (outcome.kind === "ok") {
+            this.finalizeStreamingMessage(sessionId, assistantMessage.id, {
+              content: streamedContent,
+              outcome: "ok",
+              responseChannel: "runs",
+            });
+          } else if (outcome.kind === "stopped") {
+            this.finalizeStreamingMessage(sessionId, assistantMessage.id, {
+              content: streamedContent,
+              outcome: "stopped",
+              responseChannel: "runs",
+            });
+          } else {
+            this.markSendFailed(sessionId, userMessage.id, assistantMessage.id, {
+              kind:
+                outcome.status === 401
+                  ? "unauthorized"
+                  : outcome.status >= 500
+                    ? "server-error"
+                    : "client-error",
+              status: outcome.status,
+              ...(outcome.message ? { message: outcome.message } : {}),
+            });
+          }
+
+          await this.persist();
+          return;
+        } catch (e) {
+          const runsErr = toApiErrorLike(e);
+          if (!isRunsFallbackError(runsErr) && runsErr.kind !== "network") {
+            throw runsErr;
+          }
+          this.setRuntimeDebug(
+            `runs failed, fallback to chat: kind=${runsErr.kind}${runsErr.status ? ` status=${runsErr.status}` : ""}`,
+          );
+          if (heartbeatTimer) {
+            clearInterval(heartbeatTimer);
+            heartbeatTimer = undefined;
+          }
+          if (inflight.runId) {
+            this.pushRunEventMessage(
+              sessionId,
+              assistantMessage.id,
+              `Runs 通道异常，切换到 Chat 流式回复`,
+            );
+          }
+          // Continue to the chat streaming path below.
+        }
+      }
+
+      inflight.transport = "chat";
+      this.setAssistantTryingChannel(sessionId, assistantMessage.id, "chat");
       let firstActivitySeen = false;
       let heartbeatCount = 0;
       const heartbeatIntervalMs = 15_000;
@@ -990,6 +1288,7 @@ export class RealController implements AppController {
       }, heartbeatIntervalMs);
 
       void notifyExtractionProcessing("请求已发送，等待模型响应...");
+      this.setRuntimeDebug("transport=chat-stream");
       const res = await this.api.openChatStream(req);
       this.setSessionPhase(sessionId, "streaming");
       void notifyExtractionProcessing("正在接收模型流式响应...");
@@ -1025,28 +1324,32 @@ export class RealController implements AppController {
             toolProgress = this.applyToolProgress(toolProgress, p);
             this.setToolProgress(sessionId, assistantMessage.id, toolProgress);
             void notifyExtractionProcessing(
-              p.status === "started"
-                ? `工具 ${p.tool} 调用中`
+              p.status === "running"
+                ? `工具 ${p.tool} 调用中${p.label ? `: ${p.label}` : ""}`
                 : `工具 ${p.tool} 已完成`,
             );
           },
           onServerSessionRef: (ref) => this.attachServerSessionRef(sessionId, ref),
           onEnd: (outcome) => {
             clearInterval(heartbeatTimer);
+            this.setRuntimeDebug(`chat stream end: kind=${outcome.kind}`);
             if (outcome.kind === "ok") {
               this.finalizeStreamingMessage(sessionId, assistantMessage.id, {
                 content: streamedContent,
                 outcome: "ok",
+                responseChannel: "chat",
               });
             } else if (outcome.kind === "stopped") {
               this.finalizeStreamingMessage(sessionId, assistantMessage.id, {
                 content: streamedContent,
                 outcome: "stopped",
+                responseChannel: "chat",
               });
             } else if (outcome.kind === "interrupted") {
               this.finalizeStreamingMessage(sessionId, assistantMessage.id, {
                 content: streamedContent,
                 outcome: "interrupted",
+                responseChannel: "chat",
               });
             } else {
               // Pre-stream HTTP error: treat as send failure. Drop the agent
@@ -1075,12 +1378,16 @@ export class RealController implements AppController {
     } catch (e) {
       // If the stream never reached consumeChatStream, stop the heartbeat.
       const err = toApiErrorLike(e);
+      this.setRuntimeDebug(
+        `send error: kind=${err.kind}${err.status ? ` status=${err.status}` : ""}${err.message ? ` msg=${err.message}` : ""}`,
+      );
       if (err.kind === "stopped") {
         // Aborted by user; the stream handler also signals this path in the
         // streaming case. Finalize as stopped.
         this.finalizeStreamingMessage(sessionId, assistantMessage.id, {
           content: "",
           outcome: "stopped",
+          responseChannel: inflight.transport === "runs" ? "runs" : "chat",
         });
       } else {
         this.markSendFailed(
@@ -1114,6 +1421,44 @@ export class RealController implements AppController {
     this.putSession({ ...session, messages, updatedAt: Date.now() }, {});
   }
 
+  private pushRunEventMessage(
+    sessionId: string,
+    anchorMessageId: string,
+    line: string,
+  ): void {
+    const session = this.state.sessions.find((s) => s.id === sessionId);
+    if (!session) return;
+    const stamp = new Date().toLocaleTimeString("zh-CN", {
+      hour12: false,
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    const msg: Message = {
+      id: shortId("sm"),
+      role: "system",
+      createdAt: Date.now(),
+      content: `${stamp}  ${line}`,
+    };
+    const anchorIdx = session.messages.findIndex((m) => m.id === anchorMessageId);
+    const nextMessages =
+      anchorIdx >= 0
+        ? [
+            ...session.messages.slice(0, anchorIdx),
+            msg,
+            ...session.messages.slice(anchorIdx),
+          ]
+        : [...session.messages, msg];
+    this.putSession(
+      {
+        ...session,
+        updatedAt: Date.now(),
+        messages: nextMessages,
+      },
+      {},
+    );
+  }
+
   private setToolProgress(
     sessionId: string,
     messageId: string,
@@ -1128,21 +1473,43 @@ export class RealController implements AppController {
     this.putSession({ ...session, messages }, {});
   }
 
+  private setAssistantTryingChannel(
+    sessionId: string,
+    messageId: string,
+    channel: "chat" | "run",
+  ): void {
+    const session = this.state.sessions.find((s) => s.id === sessionId);
+    if (!session) return;
+    const messages = session.messages.map((m) => {
+      if (m.id !== messageId || m.role !== "assistant") return m;
+      return { ...m, responseChannelTrying: channel };
+    });
+    this.putSession({ ...session, messages }, {});
+  }
+
   private applyToolProgress(
     prev: ToolProgressEntry[],
-    payload: { tool: string; status: "started" | "finished"; callId?: string },
+    payload: {
+      tool: string;
+      status: "running" | "completed";
+      callId?: string;
+      label?: string;
+      emoji?: string;
+    },
   ): ToolProgressEntry[] {
-    if (payload.status === "started") {
+    if (payload.status === "running") {
       const entry: ToolProgressEntry = {
         id: payload.callId ?? shortId("tp"),
         toolName: payload.tool,
         phase: "start",
-        statusText: `Calling tool ${payload.tool}…`,
+        statusText: payload.label
+          ? `Calling tool ${payload.tool}: ${payload.label}`
+          : `Calling tool ${payload.tool}…`,
         startedAt: Date.now(),
       };
       return [...prev, entry];
     }
-    // finished
+    // completed
     if (payload.callId) {
       const idx = prev.findIndex((e) => e.id === payload.callId);
       if (idx >= 0) {
@@ -1175,12 +1542,90 @@ export class RealController implements AppController {
     this.putSession({ ...session, serverSessionRef: ref }, {});
   }
 
+  private async waitForRunTerminalState(
+    runId: string,
+    apiKey?: string,
+    signal?: AbortSignal,
+    onStatus?: (line: string) => void,
+  ): Promise<{ outcome: "ok" | "stopped" | "interrupted"; content?: string } | null> {
+    let pollCount = 0;
+    for (;;) {
+      if (signal?.aborted) return { outcome: "stopped" };
+      try {
+        const state = await this.api.getRun(runId, {
+          ...(apiKey ? { apiKey } : {}),
+          ...(signal ? { signal } : {}),
+        });
+        this.setRuntimeDebug(`runs poll: run_id=${runId} status=${state.status}`);
+        onStatus?.(`poll #${pollCount + 1} status ${state.status}`);
+        if (state.status === "completed") {
+          return {
+            outcome: "ok",
+            ...(state.output && state.output.trim().length > 0
+              ? { content: state.output }
+              : {}),
+          };
+        }
+        if (state.status === "cancelled" || state.status === "stopped") {
+          return {
+            outcome: "stopped",
+            ...(state.output && state.output.trim().length > 0
+              ? { content: state.output }
+              : {}),
+          };
+        }
+        if (state.status === "failed") {
+          return {
+            outcome: "interrupted",
+            ...(state.output && state.output.trim().length > 0
+              ? { content: state.output }
+              : {}),
+          };
+        }
+      } catch (e) {
+        const err = toApiErrorLike(e);
+        this.setRuntimeDebug(
+          `runs poll failed: kind=${err.kind}${err.status ? ` status=${err.status}` : ""}`,
+        );
+        onStatus?.(
+          `poll #${pollCount + 1} failed ${err.kind}${err.status ? ` status=${err.status}` : ""}`,
+        );
+        if (err.status === 404) return null;
+      }
+      pollCount += 1;
+      await this.delayWithAbort(1200, signal);
+    }
+  }
+
+  private async delayWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+    if (!signal) {
+      await new Promise<void>((resolve) => {
+        setTimeout(() => resolve(), ms);
+      });
+      return;
+    }
+    if (signal.aborted) return;
+    await new Promise<void>((resolve) => {
+      const id = setTimeout(() => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, ms);
+      const onAbort = () => {
+        clearTimeout(id);
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
   private finalizeStreamingMessage(
     sessionId: string,
     messageId: string,
     opts: {
       content: string;
       outcome: "ok" | "stopped" | "interrupted";
+      responseChannel?: "chat" | "runs";
       serverSessionRef?: string;
     },
   ): void {
@@ -1192,7 +1637,9 @@ export class RealController implements AppController {
         ...m,
         content: opts.content.length > 0 ? opts.content : m.content,
         streaming: false,
+        ...(opts.responseChannel ? { responseChannel: opts.responseChannel } : {}),
       };
+      delete next.responseChannelTrying;
       if (opts.outcome === "stopped") {
         next.badge = { kind: "stopped" };
       } else if (opts.outcome === "interrupted") {
@@ -1284,6 +1731,29 @@ function healthReason(err: ApiError | undefined): Exclude<
   if (err.kind === "network") return "network";
   if (err.status) return "http-error";
   return "unknown";
+}
+
+function isRunsFallbackStatus(status: number): boolean {
+  return status === 404 || status === 405;
+}
+
+function isRunsFallbackError(err: ApiError): boolean {
+  if (err.kind === "not-found") return true;
+  if (err.kind === "network" && err.message === "runs stream ended before content") {
+    return true;
+  }
+  if (typeof err.status === "number" && isRunsFallbackStatus(err.status)) {
+    return true;
+  }
+  return false;
+}
+
+function phaseFromRunStatus(status: string): SessionPhase | null {
+  if (status === "queued") return "queued";
+  if (status === "running" || status === "started" || status === "stopping") {
+    return "running";
+  }
+  return null;
 }
 
 function toApiErrorLike(e: unknown): ApiError {

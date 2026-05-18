@@ -47,6 +47,11 @@ export interface ComposerSelectionState {
   end: number;
 }
 
+export interface RuntimeDebugState {
+  at: number;
+  text: string;
+}
+
 export interface AppState {
   settings: Settings;
   activeProfile: ConnectionProfile;
@@ -69,6 +74,10 @@ export interface AppState {
   markdownPreview?: MarkdownPreviewState;
   /** Current textarea selection/caret for token insertion. */
   composerSelection?: ComposerSelectionState;
+  /** Last runtime debug event for transport/controller diagnostics. */
+  runtimeDebug?: RuntimeDebugState;
+  /** 最近的运行调试日志（用于 UI 展开查看历史）。 */
+  runtimeDebugLog?: RuntimeDebugState[];
 }
 
 /**

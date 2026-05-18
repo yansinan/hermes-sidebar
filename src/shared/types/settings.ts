@@ -92,6 +92,8 @@ export interface Settings {
   defaultModelId: string;
   enterBehavior: EnterBehavior;
   streamingEnabled: boolean;
+  /** Prefer Runs API for streaming when available; fallback to chat stream. */
+  useRunsApi?: boolean;
   /** When on, attach `X-Hermes-Session-Id` if a `serverSessionRef` is recorded. */
   reuseServerSession: boolean;
   /** When on, include `Idempotency-Key` on sends (always on in v1 defaults). */
@@ -114,6 +116,7 @@ export const DEFAULT_SETTINGS: Settings = {
   defaultModelId: "",
   enterBehavior: "send",
   streamingEnabled: true,
+  useRunsApi: true,
   reuseServerSession: false,
   sendIdempotencyKey: true,
   showReadabilityContextMenu: true,
