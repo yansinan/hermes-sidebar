@@ -68,6 +68,61 @@ export interface HermesApiClientOptions {
   timeoutMs?: number;
 }
 
+// ---------------------------------------------------------------------------
+// Runs API types (Hermes-specific: POST /v1/runs, GET /v1/runs/{id}/events,
+// POST /v1/runs/{id}/stop).
+// ---------------------------------------------------------------------------
+
+export type RunStatus =
+  | "started"
+  | "queued"
+  | "running"
+  | "stopping"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "stopped";
+
+export interface CreateRunRequest {
+  model?: string;
+  messages?: ChatWireMessage[];
+  /** Preferred by current Hermes docs. */
+  input?: string;
+  /** Optional Bearer token. */
+  apiKey?: string;
+  /** AbortSignal to cancel the HTTP call (not the run itself). */
+  signal?: AbortSignal;
+  /** Legacy alias used by earlier migration notes. */
+  conversation?: string;
+  /** Canonical docs field for server-side session correlation. */
+  sessionId?: string;
+  instructions?: string;
+  previousResponseId?: string;
+  conversationHistory?: ChatWireMessage[];
+  /** Echo back a previously captured server session id. */
+  serverSessionRef?: string;
+  /** Idempotency key forwarded as Idempotency-Key header. */
+  idempotencyKey?: string;
+}
+
+export interface RunCreatedResponse {
+  /** Opaque run identifier used to subscribe to events and stop the run. */
+  runId: string;
+  /** Backward-compatible alias for existing call sites. */
+  id: string;
+  status: RunStatus;
+}
+
+export interface OpenRunEventsOptions {
+  apiKey?: string;
+  /** Caller-supplied AbortSignal. No server-level timeout is applied. */
+  signal?: AbortSignal;
+}
+
+export interface StopRunOptions {
+  apiKey?: string;
+}
+
 export class HermesApiClient {
   private baseUrl: string;
   private readonly fetchImpl: FetchFn;
@@ -187,6 +242,125 @@ export class HermesApiClient {
    */
   async openChatStream(req: ChatCompletionsRequest): Promise<Response> {
     return this.postChatCompletions(req);
+  }
+
+  // ---- Runs API -----------------------------------------------------------
+
+  /**
+   * POST /v1/runs — create an agent run and return the run id + initial status.
+   * On non-2xx throws an `ApiError`-shaped object.
+   */
+  async createRun(req: CreateRunRequest): Promise<RunCreatedResponse> {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json; charset=utf-8",
+      Accept: "application/json",
+    };
+    if (req.apiKey && req.apiKey.length > 0) {
+      headers["Authorization"] = `Bearer ${req.apiKey}`;
+    }
+    if (req.idempotencyKey) {
+      headers["Idempotency-Key"] = req.idempotencyKey;
+    }
+    if (req.serverSessionRef) {
+      headers["X-Hermes-Session-Id"] = req.serverSessionRef;
+    }
+    const bodyObj: Record<string, unknown> = {};
+    if (req.input && req.input.length > 0) {
+      bodyObj["input"] = req.input;
+    } else if (Array.isArray(req.messages)) {
+      const lastUser = [...req.messages].reverse().find((m) => m.role === "user");
+      bodyObj["input"] = lastUser?.content ?? "";
+    }
+    if (req.model) bodyObj["model"] = req.model;
+    if (Array.isArray(req.messages)) bodyObj["messages"] = req.messages;
+    if (req.sessionId) bodyObj["session_id"] = req.sessionId;
+    if (req.instructions) bodyObj["instructions"] = req.instructions;
+    if (req.previousResponseId) {
+      bodyObj["previous_response_id"] = req.previousResponseId;
+    }
+    if (Array.isArray(req.conversationHistory)) {
+      bodyObj["conversation_history"] = req.conversationHistory;
+    }
+    if (req.conversation) bodyObj["conversation"] = req.conversation;
+    const signal = req.signal ?? this.makeTimeoutSignal();
+    const res = await this.fetchImpl(joinUrl(this.baseUrl, "/v1/runs"), {
+      method: "POST",
+      headers,
+      body: JSON.stringify(bodyObj),
+      credentials: "omit",
+      ...(signal ? { signal } : {}),
+    });
+    if (!res.ok) throw await this.toApiError(res);
+    const body = (await res.json()) as {
+      id?: unknown;
+      run_id?: unknown;
+      status?: unknown;
+    };
+    const runId =
+      typeof body?.run_id === "string"
+        ? body.run_id
+        : typeof body?.id === "string"
+          ? body.id
+          : undefined;
+    if (typeof runId !== "string") {
+      throw { kind: "server-error", message: "runs response missing run_id" } as const;
+    }
+    return {
+      runId,
+      id: runId,
+      status: (body.status as RunStatus) ?? "started",
+    };
+  }
+
+  /**
+   * GET /v1/runs/{runId}/events — open the SSE event stream for a run.
+   * Returns the raw `Response`; the caller (runs event consumer) reads it.
+   * No server-level timeout is applied; the caller provides an AbortSignal.
+   */
+  async openRunEvents(
+    runId: string,
+    opts: OpenRunEventsOptions = {},
+  ): Promise<Response> {
+    const headers: Record<string, string> = {
+      Accept: "text/event-stream",
+    };
+    if (opts.apiKey && opts.apiKey.length > 0) {
+      headers["Authorization"] = `Bearer ${opts.apiKey}`;
+    }
+    return this.fetchImpl(
+      joinUrl(this.baseUrl, `/v1/runs/${encodeURIComponent(runId)}/events`),
+      {
+        method: "GET",
+        headers,
+        credentials: "omit",
+        ...(opts.signal ? { signal: opts.signal } : {}),
+      },
+    );
+  }
+
+  /**
+   * POST /v1/runs/{runId}/stop — request the server to stop an in-progress run.
+   * Best-effort: throws on network failure but does not throw on 404 (run may
+   * have already finished).
+   */
+  async stopRun(runId: string, opts: StopRunOptions = {}): Promise<void> {
+    const headers: Record<string, string> = {
+      Accept: "application/json",
+    };
+    if (opts.apiKey && opts.apiKey.length > 0) {
+      headers["Authorization"] = `Bearer ${opts.apiKey}`;
+    }
+    const res = await this.fetchImpl(
+      joinUrl(this.baseUrl, `/v1/runs/${encodeURIComponent(runId)}/stop`),
+      {
+        method: "POST",
+        headers,
+        credentials: "omit",
+        signal: this.makeTimeoutSignal(),
+      },
+    );
+    // 404 means the run already ended — treat as success.
+    if (!res.ok && res.status !== 404) throw await this.toApiError(res);
   }
 
   /**
