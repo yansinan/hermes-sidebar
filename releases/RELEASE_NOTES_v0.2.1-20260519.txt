@@ -1,0 +1,89 @@
+Release v0.2.1-20260519 - Runs-first streaming and unified process timeline
+===========================================================================
+
+Version: 0.2.1
+Build Date: May 19, 2026
+Package: hermes-sidebar-v0.2.1-20260519.tar.gz
+
+DOWNLOAD
+--------
+
+Release Asset:
+  hermes-sidebar-v0.2.1-20260519.tar.gz
+
+HIGHLIGHTS
+----------
+
+This release upgrades Hermes Sidebar to a Runs-first execution model and
+aligns process feedback across the sidepanel and right-click workflow.
+
+✓ Runs API is now the primary transport, with Chat streaming fallback when needed
+✓ Process updates are unified into a single blue process bar
+✓ Timeline events are persisted and shown consistently in both sidepanel and right-click flows
+✓ Hermes Runs SSE parsing now follows the documented event model more closely
+✓ Session reuse is improved so session ids are carried forward across requests
+
+WHAT CHANGED
+------------
+
+Transport and event handling
+
+- Added Runs-first request orchestration with Chat fallback
+- Extended Chat lifecycle feedback to include thinking, streaming start, and completion events
+- Added support for comment-based SSE markers such as `: keepalive` and `: stream closed`
+- Modeled `waiting_for_approval` end-to-end in the client, controller, and UI
+- Centralized Runs status wording in a shared enum table for consistent labeling
+
+UI and conversation behavior
+
+- Unified live progress into the process bar instead of duplicating placeholder assistant bubbles
+- Suppressed empty assistant streaming rows until there is real content or tool output
+- Added timeline event injection for extraction and right-click flows
+- Reused shared process/timeline helpers across sidepanel and background workflows
+- Refined timeline visuals with lighter tags and optional detail expansion
+
+Stability and integration
+
+- Improved reuse of captured `session_id` / server session references
+- Added targeted regression coverage for Runs parsing and controller transport behavior
+- Verified build and targeted tests after the refactor
+
+TECHNICAL SUMMARY
+-----------------
+
+- Runs event coverage expanded for:
+  - `tool.started`
+  - `tool.completed`
+  - `reasoning.available`
+  - `approval.request`
+  - `approval.responded`
+  - `run.completed`
+  - `run.failed`
+  - `run.cancelled`
+- Shared process helpers extracted into `src/shared/process-events.ts`
+- Shared Runs label table extracted into `src/shared/runs-status.ts`
+
+VALIDATION
+----------
+
+✓ `npm run build`
+✓ TypeScript build passes
+✓ Targeted controller / runs regression tests pass during development
+
+UPGRADE NOTES
+-------------
+
+✓ No user migration required
+✓ Existing local sessions and settings remain compatible
+✓ Extension manifest version is now 0.2.1
+
+SUPPORT
+-------
+
+GitHub: https://github.com/yansinan/hermes-sidebar
+Issues: https://github.com/yansinan/hermes-sidebar/issues
+
+---
+
+Release prepared: May 19, 2026
+Status: Ready to publish
