@@ -42,6 +42,12 @@ import {
   type StorageGateway,
 } from "../storage/gateway";
 import { normalizeBaseUrl, toProfile } from "./profile";
+import {
+  formatProcessTimestamp,
+  toSystemTimelineMessages,
+  type ActivityTimelineItem,
+} from "../shared/process-events";
+import { formatRunsQueueWait, RUNS_EVENT_LABELS } from "../shared/runs-status";
 
 export interface BuildControllerOptions {
   gateway?: StorageGateway;
@@ -145,8 +151,10 @@ export class RealController implements AppController {
 
     const record = await this.gateway.loadProfile(profile.key);
     let activeSessionId: string | null = null;
-    if (record.activeSessionId &&
-        record.sessions.some((s) => s.id === record.activeSessionId)) {
+    if (
+      record.activeSessionId &&
+      record.sessions.some((s) => s.id === record.activeSessionId)
+    ) {
       activeSessionId = record.activeSessionId;
     } else if (record.sessions.length > 0) {
       const latest = [...record.sessions].sort(
@@ -507,6 +515,7 @@ export class RealController implements AppController {
   async addExtractionResult(
     userMessage: UserMessage,
     assistantMessage: AssistantMessage,
+    activityTimeline: ActivityTimelineItem[] = [],
   ): Promise<void> {
     const now = Date.now();
     let session = this.activeSession();
@@ -517,13 +526,17 @@ export class RealController implements AppController {
     }
 
     const modelId = assistantMessage.modelId || this.currentModelId() || session.modelId;
+    const systemMessages: Message[] = toSystemTimelineMessages(
+      activityTimeline,
+      () => shortId("sm"),
+    );
     
     // Add both user and assistant messages to the session
     const updatedSession: Session = {
       ...session,
       updatedAt: now,
       modelId,
-      messages: [...session.messages, userMessage, assistantMessage],
+      messages: [...session.messages, userMessage, ...systemMessages, assistantMessage],
     };
     
     this.putSession(updatedSession, { makeActive: true });
@@ -993,6 +1006,7 @@ export class RealController implements AppController {
         await chrome.runtime.sendMessage({
           type: "extraction-processing",
           statusText,
+          transportInfo: inflight.transport === "runs" ? "runs" : "chat",
         });
       } catch {
         // best effort only
@@ -1026,7 +1040,10 @@ export class RealController implements AppController {
           ? { idempotencyKey: userMessage.idempotencyKey }
           : {}),
         ...(this.state.settings.reuseServerSession && session.serverSessionRef
-          ? { sessionId: session.serverSessionRef }
+          ? {
+              sessionId: session.serverSessionRef,
+              serverSessionRef: session.serverSessionRef,
+            }
           : {}),
       };
 
@@ -1034,14 +1051,14 @@ export class RealController implements AppController {
         try {
           inflight.transport = "runs";
           this.setAssistantTryingChannel(sessionId, assistantMessage.id, "run");
-          const emitRunEvent = (line: string) => {
-            this.pushRunEventMessage(sessionId, assistantMessage.id, line);
+          const emitRunEvent = (line: string, detail?: string) => {
+            this.pushActivityMessage(sessionId, assistantMessage.id, line, detail);
           };
           this.setRuntimeDebug("transport=runs createRun");
           const created = await this.api.createRun(runReq);
           inflight.runId = created.runId;
           this.setRuntimeDebug(`runs created: run_id=${created.runId} status=${created.status}`);
-          emitRunEvent("任务已创建，准备执行");
+          emitRunEvent(RUNS_EVENT_LABELS.createAcceptedTimeline);
 
           const createdPhase = phaseFromRunStatus(created.status);
           if (createdPhase) {
@@ -1055,20 +1072,19 @@ export class RealController implements AppController {
             if (firstActivitySeen) return;
             heartbeatCount += 1;
             const elapsedSeconds = (heartbeatCount * heartbeatIntervalMs) / 1000;
-            const statusText =
-              elapsedSeconds < 60
-                ? `模型排队中，已等待 ${elapsedSeconds} 秒...`
-                : `模型排队中，已等待 ${Math.round(elapsedSeconds / 60)} 分钟...`;
+            const statusText = formatRunsQueueWait(elapsedSeconds);
             void notifyExtractionProcessing(statusText);
           }, heartbeatIntervalMs);
 
-          void notifyExtractionProcessing("Run 已创建，等待事件流...");
+          void notifyExtractionProcessing(RUNS_EVENT_LABELS.createAcceptedProcessBar);
           this.setRuntimeDebug(`transport=runs events open run_id=${created.runId}`);
-          emitRunEvent("已连接执行事件流");
+          emitRunEvent(RUNS_EVENT_LABELS.eventsConnectedTimeline);
           const runEventsRes = await this.api.openRunEvents(created.runId, {
             ...(apiKey ? { apiKey } : {}),
             signal: controller.signal,
           });
+          const runHeaderRef = this.api.extractServerSessionRef(runEventsRes);
+          if (runHeaderRef) this.attachServerSessionRef(sessionId, runHeaderRef);
           if (!runEventsRes.ok && isRunsFallbackStatus(runEventsRes.status)) {
             throw {
               kind: runEventsRes.status === 404 ? "not-found" : "client-error",
@@ -1085,7 +1101,7 @@ export class RealController implements AppController {
               onMessageDelta: (p) => {
                 if (!firstActivitySeen) {
                   firstActivitySeen = true;
-                  void notifyExtractionProcessing("模型正在生成回复...");
+                  void notifyExtractionProcessing(RUNS_EVENT_LABELS.generatingReply);
                 }
                 streamedContent += p.delta;
                 this.appendStreamDelta(sessionId, assistantMessage.id, p.delta);
@@ -1093,40 +1109,49 @@ export class RealController implements AppController {
               onToolStarted: (p) => {
                 if (!firstActivitySeen) {
                   firstActivitySeen = true;
-                  void notifyExtractionProcessing(`工具 ${p.tool} 调用中...`);
+                  void notifyExtractionProcessing(
+                    RUNS_EVENT_LABELS.toolRunningProcessBar(p.tool, p.preview),
+                  );
                 }
                 this.setRuntimeDebug(`runs tool started: ${p.tool} ${p.preview || ""}`);
                 emitRunEvent(
-                  p.preview && p.preview.trim().length > 0
-                    ? `调用工具：${p.tool}（${p.preview}）`
-                    : `调用工具：${p.tool}`,
+                  RUNS_EVENT_LABELS.toolStartedTimeline(p.tool),
+                  p.preview ? `预览：${p.preview}` : undefined,
                 );
               },
               onToolCompleted: (p) => {
                 this.setRuntimeDebug(
                   `runs tool completed: ${p.tool} duration=${p.duration.toFixed(3)}s error=${p.error}`,
                 );
-                emitRunEvent(p.error ? `工具失败：${p.tool}` : `工具完成：${p.tool}`);
-                void notifyExtractionProcessing(`工具 ${p.tool} 已完成`);
+                emitRunEvent(
+                  RUNS_EVENT_LABELS.toolCompletedTimeline(p.tool, p.error),
+                  `耗时：${p.duration.toFixed(3)} 秒${p.error ? "，结果失败" : ""}`,
+                );
+                void notifyExtractionProcessing(
+                  RUNS_EVENT_LABELS.toolCompletedProcessBar(p.tool, p.error),
+                );
               },
               onReasoningAvailable: (p) => {
                 if (!firstActivitySeen) {
                   firstActivitySeen = true;
-                  void notifyExtractionProcessing("模型思考中...");
+                  void notifyExtractionProcessing(RUNS_EVENT_LABELS.reasoningProcessBar);
                 }
                 this.setRuntimeDebug(`runs reasoning available: +${p.text.length} chars`);
-                emitRunEvent("模型正在分析问题");
+                emitRunEvent(RUNS_EVENT_LABELS.reasoningTimeline, p.text);
                 // Optionally append reasoning to conversation if desired
               },
               onRunCompleted: (p) => {
                 if (!firstActivitySeen) {
                   firstActivitySeen = true;
-                  void notifyExtractionProcessing("模型已返回结果...");
+                  void notifyExtractionProcessing(RUNS_EVENT_LABELS.resultReturned);
                 }
                 this.setRuntimeDebug(
                   `runs completed: output=${p.output.length} chars, tokens=${p.usage?.total_tokens || 0}`,
                 );
-                emitRunEvent("回复生成完成");
+                emitRunEvent(
+                  RUNS_EVENT_LABELS.runCompletedTimeline,
+                  `输出：${p.output.length} 字符${p.usage?.total_tokens ? `，总 tokens：${p.usage.total_tokens}` : ""}`,
+                );
                 if (streamedContent.length === 0 && p.output.length > 0) {
                   streamedContent = p.output;
                   this.appendStreamDelta(sessionId, assistantMessage.id, p.output);
@@ -1148,33 +1173,38 @@ export class RealController implements AppController {
                   `runs status: run_id=${p.runId || created.runId} status=${p.status}`,
                 );
                 if (p.status === "failed") {
-                  emitRunEvent("任务执行失败");
+                  emitRunEvent(
+                    RUNS_EVENT_LABELS.runFailedTimeline,
+                    p.error ? `错误：${p.error}` : undefined,
+                  );
                 } else if (p.status === "cancelled") {
-                  emitRunEvent("任务已取消");
+                  emitRunEvent(RUNS_EVENT_LABELS.runCancelledTimeline);
                 }
               },
               onServerSessionRef: (ref) => this.attachServerSessionRef(sessionId, ref),
               onUnknownEvent: (eventName, _data) => {
                 this.setRuntimeDebug(`runs unknown event: ${eventName}`);
                 if (eventName === "approval.request") {
-                  emitRunEvent("等待你确认操作权限");
+                  const detail = this.formatRunEventDetail(_data, ["prompt", "choices"]);
+                  emitRunEvent(RUNS_EVENT_LABELS.approvalRequest, detail);
                   return;
                 }
                 if (eventName === "approval.responded") {
-                  emitRunEvent("已收到权限确认，继续执行");
+                  const detail = this.formatRunEventDetail(_data, ["choice", "resolved"]);
+                  emitRunEvent(RUNS_EVENT_LABELS.approvalResponded, detail);
                   return;
                 }
-                emitRunEvent(`收到事件：${eventName}`);
+                emitRunEvent(RUNS_EVENT_LABELS.unknownEvent(eventName));
               },
               onEnd: (outcome) => {
                 runOutcome = outcome;
                 clearInterval(heartbeatTimer);
                 if (outcome.kind === "ok") {
-                  emitRunEvent("执行结束");
+                  emitRunEvent(RUNS_EVENT_LABELS.terminalOk);
                 } else if (outcome.kind === "stopped") {
-                  emitRunEvent("已停止执行");
+                  emitRunEvent(RUNS_EVENT_LABELS.terminalStopped);
                 } else if (outcome.kind === "interrupted") {
-                  emitRunEvent("连接中断，正在恢复");
+                  emitRunEvent(RUNS_EVENT_LABELS.terminalInterrupted);
                 }
               },
             },
@@ -1192,8 +1222,11 @@ export class RealController implements AppController {
               (line) => emitRunEvent(line),
             );
             if (resolved) {
+              if (resolved.serverSessionRef) {
+                this.attachServerSessionRef(sessionId, resolved.serverSessionRef);
+              }
               if (resolved.content && resolved.content !== streamedContent) {
-                emitRunEvent("已从任务结果恢复回复内容");
+                emitRunEvent(RUNS_EVENT_LABELS.recoveredFromPoll);
                 if (
                   resolved.content.length > streamedContent.length &&
                   resolved.content.startsWith(streamedContent)
@@ -1209,6 +1242,9 @@ export class RealController implements AppController {
                 content: streamedContent,
                 outcome: resolved.outcome,
                 responseChannel: "runs",
+                ...(resolved.serverSessionRef
+                  ? { serverSessionRef: resolved.serverSessionRef }
+                  : {}),
               });
               this.setRuntimeDebug(`runs resolved via getRun: ${resolved.outcome}`);
               await this.persist();
@@ -1261,10 +1297,10 @@ export class RealController implements AppController {
             heartbeatTimer = undefined;
           }
           if (inflight.runId) {
-            this.pushRunEventMessage(
+            this.pushActivityMessage(
               sessionId,
               assistantMessage.id,
-              `Runs 通道异常，切换到 Chat 流式回复`,
+              RUNS_EVENT_LABELS.fallbackToChat,
             );
           }
           // Continue to the chat streaming path below.
@@ -1273,7 +1309,13 @@ export class RealController implements AppController {
 
       inflight.transport = "chat";
       this.setAssistantTryingChannel(sessionId, assistantMessage.id, "chat");
+      const emitChatEvent = (line: string) => {
+        this.pushActivityMessage(sessionId, assistantMessage.id, line);
+      };
       let firstActivitySeen = false;
+      let chatConnected = false;
+      let chatReasoningAnnounced = false;
+      let chatReplyStarted = false;
       let heartbeatCount = 0;
       const heartbeatIntervalMs = 15_000;
       heartbeatTimer = setInterval(() => {
@@ -1290,6 +1332,10 @@ export class RealController implements AppController {
       void notifyExtractionProcessing("请求已发送，等待模型响应...");
       this.setRuntimeDebug("transport=chat-stream");
       const res = await this.api.openChatStream(req);
+      if (res.ok && !chatConnected) {
+        chatConnected = true;
+        emitChatEvent("已连接流式回复");
+      }
       this.setSessionPhase(sessionId, "streaming");
       void notifyExtractionProcessing("正在接收模型流式响应...");
       // Capture any session ref off the response head.
@@ -1306,10 +1352,18 @@ export class RealController implements AppController {
               firstActivitySeen = true;
               void notifyExtractionProcessing("模型已开始返回内容...");
             }
+            if (!chatReplyStarted) {
+              chatReplyStarted = true;
+              emitChatEvent("模型开始生成回复");
+            }
             streamedContent += delta;
             this.appendStreamDelta(sessionId, assistantMessage.id, delta);
           },
           onThinkingDelta: () => {
+            if (!chatReasoningAnnounced) {
+              chatReasoningAnnounced = true;
+              emitChatEvent("模型正在分析问题");
+            }
             if (!firstActivitySeen) {
               firstActivitySeen = true;
               void notifyExtractionProcessing("模型正在思考...");
@@ -1334,18 +1388,21 @@ export class RealController implements AppController {
             clearInterval(heartbeatTimer);
             this.setRuntimeDebug(`chat stream end: kind=${outcome.kind}`);
             if (outcome.kind === "ok") {
+              emitChatEvent("回复生成完成");
               this.finalizeStreamingMessage(sessionId, assistantMessage.id, {
                 content: streamedContent,
                 outcome: "ok",
                 responseChannel: "chat",
               });
             } else if (outcome.kind === "stopped") {
+              emitChatEvent("已停止生成");
               this.finalizeStreamingMessage(sessionId, assistantMessage.id, {
                 content: streamedContent,
                 outcome: "stopped",
                 responseChannel: "chat",
               });
             } else if (outcome.kind === "interrupted") {
+              emitChatEvent("连接中断，可继续");
               this.finalizeStreamingMessage(sessionId, assistantMessage.id, {
                 content: streamedContent,
                 outcome: "interrupted",
@@ -1421,24 +1478,21 @@ export class RealController implements AppController {
     this.putSession({ ...session, messages, updatedAt: Date.now() }, {});
   }
 
-  private pushRunEventMessage(
+  private pushActivityMessage(
     sessionId: string,
     anchorMessageId: string,
     line: string,
+    detail?: string,
   ): void {
     const session = this.state.sessions.find((s) => s.id === sessionId);
     if (!session) return;
-    const stamp = new Date().toLocaleTimeString("zh-CN", {
-      hour12: false,
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
+    const stamp = formatProcessTimestamp(Date.now());
+    const detailText = detail?.trim();
     const msg: Message = {
       id: shortId("sm"),
       role: "system",
       createdAt: Date.now(),
-      content: `${stamp}  ${line}`,
+      content: detailText ? `${stamp}  ${line}\n${detailText}` : `${stamp}  ${line}`,
     };
     const anchorIdx = session.messages.findIndex((m) => m.id === anchorMessageId);
     const nextMessages =
@@ -1536,6 +1590,37 @@ export class RealController implements AppController {
     ];
   }
 
+  private formatRunEventDetail(raw: string, keys: string[]): string | undefined {
+    let parsed: Record<string, unknown> | undefined;
+    try {
+      const value = JSON.parse(raw);
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        parsed = value as Record<string, unknown>;
+      }
+    } catch {
+      return undefined;
+    }
+    if (!parsed) return undefined;
+
+    const lines: string[] = [];
+    for (const key of keys) {
+      const value = parsed[key];
+      if (typeof value === "string" && value.trim()) {
+        lines.push(`${key}：${value.trim()}`);
+        continue;
+      }
+      if (Array.isArray(value) && value.length > 0) {
+        const items = value
+          .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+          .map((item) => item.trim());
+        if (items.length > 0) {
+          lines.push(`${key}：${items.join(" / ")}`);
+        }
+      }
+    }
+    return lines.length > 0 ? lines.join("\n") : undefined;
+  }
+
   private attachServerSessionRef(sessionId: string, ref: string): void {
     const session = this.state.sessions.find((s) => s.id === sessionId);
     if (!session || session.serverSessionRef === ref) return;
@@ -1547,7 +1632,11 @@ export class RealController implements AppController {
     apiKey?: string,
     signal?: AbortSignal,
     onStatus?: (line: string) => void,
-  ): Promise<{ outcome: "ok" | "stopped" | "interrupted"; content?: string } | null> {
+  ): Promise<{
+    outcome: "ok" | "stopped" | "interrupted";
+    content?: string;
+    serverSessionRef?: string;
+  } | null> {
     let pollCount = 0;
     for (;;) {
       if (signal?.aborted) return { outcome: "stopped" };
@@ -1558,12 +1647,14 @@ export class RealController implements AppController {
         });
         this.setRuntimeDebug(`runs poll: run_id=${runId} status=${state.status}`);
         onStatus?.(`poll #${pollCount + 1} status ${state.status}`);
+        const serverSessionRef = state.sessionId;
         if (state.status === "completed") {
           return {
             outcome: "ok",
             ...(state.output && state.output.trim().length > 0
               ? { content: state.output }
               : {}),
+            ...(serverSessionRef ? { serverSessionRef } : {}),
           };
         }
         if (state.status === "cancelled" || state.status === "stopped") {
@@ -1572,6 +1663,7 @@ export class RealController implements AppController {
             ...(state.output && state.output.trim().length > 0
               ? { content: state.output }
               : {}),
+            ...(serverSessionRef ? { serverSessionRef } : {}),
           };
         }
         if (state.status === "failed") {
@@ -1580,6 +1672,7 @@ export class RealController implements AppController {
             ...(state.output && state.output.trim().length > 0
               ? { content: state.output }
               : {}),
+            ...(serverSessionRef ? { serverSessionRef } : {}),
           };
         }
       } catch (e) {
@@ -1750,6 +1843,7 @@ function isRunsFallbackError(err: ApiError): boolean {
 
 function phaseFromRunStatus(status: string): SessionPhase | null {
   if (status === "queued") return "queued";
+  if (status === "waiting_for_approval") return "waiting-approval";
   if (status === "running" || status === "started" || status === "stopping") {
     return "running";
   }

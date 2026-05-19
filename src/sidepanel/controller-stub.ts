@@ -28,6 +28,7 @@ import type {
   BuildControllerOptions,
 } from "../runtime";
 import { createRealController, toProfile } from "../runtime";
+import type { ActivityTimelineItem } from "../shared/process-events";
 
 function randomId(prefix = "id"): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random()
@@ -585,9 +586,32 @@ export function createStubController(
       patch({ banners: state.banners.filter((b) => b.id !== bannerId) });
     },
 
-    async addExtractionResult(userMessage, assistantMessage) {
+    async addExtractionResult(
+      userMessage,
+      assistantMessage,
+      activityTimeline: ActivityTimelineItem[] = [],
+    ) {
       const now = Date.now();
       let activeSessionId = state.activeSessionId;
+      const activityMessages = activityTimeline
+        .map((item) => {
+          const text = (item?.text ?? "").trim();
+          if (!text) return null;
+          const createdAt = typeof item.at === "number" ? item.at : now;
+          const stamp = new Date(createdAt).toLocaleTimeString("zh-CN", {
+            hour12: false,
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+          });
+          return {
+            id: randomId("sm"),
+            role: "system" as const,
+            content: `${stamp}  ${text}`,
+            createdAt,
+          };
+        })
+        .filter((m) => m !== null);
       
       if (!activeSessionId) {
         // Create a new session
@@ -598,7 +622,7 @@ export function createStubController(
           createdAt: now,
           updatedAt: now,
           modelId: assistantMessage.modelId || pickModelId(),
-          messages: [userMessage, assistantMessage],
+          messages: [userMessage, ...activityMessages, assistantMessage],
         };
         patch({
           sessions: [...state.sessions, session],
@@ -612,7 +636,7 @@ export function createStubController(
           const updated = {
             ...session,
             updatedAt: now,
-            messages: [...session.messages, userMessage, assistantMessage],
+            messages: [...session.messages, userMessage, ...activityMessages, assistantMessage],
           };
           patch({
             sessions: state.sessions.map((s) => (s.id === activeSessionId ? updated : s)),

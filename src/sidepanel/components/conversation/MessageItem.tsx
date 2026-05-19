@@ -1,6 +1,7 @@
 import type { AppController } from "../../../shared/app-state";
 import type { AssistantMessage, Message, UserMessage } from "../../../shared/types/message";
 import { Markdown } from "../shared/Markdown";
+import { ActivityTimelineEvent } from "./ActivityTimelineEvent";
 import { ToolProgressBlock } from "./ToolProgressBlock";
 
 interface Props {
@@ -11,11 +12,22 @@ interface Props {
 
 export function MessageItem({ sessionId, message, controller }: Props) {
   const role = message.role;
+  if (role === "assistant") {
+    const assistant = message as AssistantMessage;
+    const hasToolProgress = Boolean(assistant.toolProgress && assistant.toolProgress.length > 0);
+    const hasBadge = Boolean(assistant.badge);
+    // During processing we now use the global process bar. Skip rendering
+    // the empty assistant row entirely until there is real content/tool output.
+    if (assistant.streaming && assistant.content.length === 0 && !hasToolProgress && !hasBadge) {
+      return null;
+    }
+  }
+
   const roleLabel = role === "user" ? "You" : role === "assistant" ? "Hermes" : "Activity";
 
   return (
     <li className={`message message--${role}`}>
-      {role !== "system" ? (
+      {role === "user" || role === "assistant" ? (
         <div className="message__role" aria-hidden>
           {roleLabel}
         </div>
@@ -34,23 +46,9 @@ export function MessageItem({ sessionId, message, controller }: Props) {
           controller={controller}
         />
       ) : (
-        <SystemBody content={message.content} />
+        <ActivityTimelineEvent content={message.content} />
       )}
     </li>
-  );
-}
-
-function SystemBody({ content }: { content: string }) {
-  const match = content.match(/^(\d{2}:\d{2}:\d{2})\s+(.*)$/s);
-  const time = match?.[1] ?? "";
-  const text = match?.[2] ?? content;
-
-  return (
-    <div className="message__activity" aria-label="Activity event">
-      {time ? <span className="message__activity-time">{time}</span> : null}
-      <span className="message__activity-dot" aria-hidden />
-      <span className="message__activity-text">{text}</span>
-    </div>
   );
 }
 
@@ -109,11 +107,7 @@ function AssistantBody({
       {message.toolProgress && message.toolProgress.length > 0 && (
         <ToolProgressBlock entries={message.toolProgress} />
       )}
-      {message.content.length === 0 && message.streaming ? (
-        <div className="message__placeholder" aria-live="polite">
-          Hermes is responding<span className="md-caret" aria-hidden />
-        </div>
-      ) : (
+      {message.content.length > 0 && (
         <Markdown text={message.content} streaming={message.streaming} />
       )}
       {badge && (

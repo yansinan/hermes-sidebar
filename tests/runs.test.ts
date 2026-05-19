@@ -115,6 +115,32 @@ describe("consumeRunEvents — message delta", () => {
     expect(outcome).toEqual({ kind: "ok" });
     expect(deltas.join("")).toBe("Hello");
   });
+
+  it("captures server session ref from event-stream headers", async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const encoder = new TextEncoder();
+        controller.enqueue(
+          encoder.encode(
+            'data: {"event":"run.completed","run_id":"r1","timestamp":1002,"output":"Hello"}\n\n',
+          ),
+        );
+        controller.close();
+      },
+    });
+    const res = new Response(stream, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/event-stream",
+        "X-Hermes-Session-Id": "srv-runs-1",
+      },
+    });
+    const refs: string[] = [];
+    await consumeRunEvents(res, {
+      onServerSessionRef: (ref) => refs.push(ref),
+    });
+    expect(refs).toEqual(["srv-runs-1"]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -260,5 +286,82 @@ describe("consumeRunEvents — unknown event types", () => {
     ]);
     const outcome = await consumeRunEvents(res, {});
     expect(outcome.kind).toBe("ok");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Explicit SSE event names
+// ---------------------------------------------------------------------------
+
+describe("consumeRunEvents — explicit SSE event names", () => {
+  it("handles explicit run lifecycle events and terminal completion", async () => {
+    const res = sseResponse([
+      'event: run.queued\n' + 'data: {"run_id":"r1","timestamp":1000}\n\n',
+      'event: run.running\n' + 'data: {"run_id":"r1","timestamp":1001}\n\n',
+      'event: run.completed\n' +
+        'data: {"run_id":"r1","timestamp":1002,"output":"ok"}\n\n',
+    ]);
+
+    const statuses: string[] = [];
+    const outputs: string[] = [];
+    const outcome = await consumeRunEvents(res, {
+      onRunStatus: (p) => statuses.push(p.status),
+      onRunCompleted: (p) => outputs.push(p.output),
+    });
+
+    expect(outcome).toEqual({ kind: "ok" });
+    expect(statuses).toEqual(["queued", "running"]);
+    expect(outputs).toEqual(["ok"]);
+  });
+
+  it("maps explicit hermes.tool.progress to tool started/completed", async () => {
+    const res = sseResponse([
+      'event: hermes.tool.progress\n' +
+        'data: {"run_id":"r1","timestamp":1000,"tool":"session_search","status":"running","label":"querying"}\n\n',
+      'event: hermes.tool.progress\n' +
+        'data: {"run_id":"r1","timestamp":1001,"tool":"session_search","status":"completed"}\n\n',
+      'event: run.completed\n' +
+        'data: {"run_id":"r1","timestamp":1002,"output":"done"}\n\n',
+    ]);
+
+    const starts: string[] = [];
+    const ends: string[] = [];
+    const outcome = await consumeRunEvents(res, {
+      onToolStarted: (p) => starts.push(`${p.tool}:${p.preview ?? ""}`),
+      onToolCompleted: (p) => ends.push(p.tool),
+    });
+
+    expect(outcome.kind).toBe("ok");
+    expect(starts).toEqual(["session_search:querying"]);
+    expect(ends).toEqual(["session_search"]);
+  });
+
+  it("treats comment stream closed as a normal terminal marker", async () => {
+    const res = sseResponse([
+      'data: {"event":"run.completed","run_id":"r1","timestamp":1000,"output":"done"}\n\n',
+      ': stream closed\n\n',
+    ]);
+
+    const outcome = await consumeRunEvents(res, {});
+    expect(outcome).toEqual({ kind: "ok" });
+  });
+
+  it("maps approval.request/responded to waiting_for_approval then running", async () => {
+    const res = sseResponse([
+      'data: {"event":"approval.request","run_id":"r1","timestamp":1000,"prompt":"Allow?","choices":["once","deny"]}\n\n',
+      'data: {"event":"approval.responded","run_id":"r1","timestamp":1001,"choice":"once","resolved":1}\n\n',
+      'data: {"event":"run.completed","run_id":"r1","timestamp":1002,"output":"done"}\n\n',
+    ]);
+
+    const statuses: string[] = [];
+    const unknownEvents: string[] = [];
+    const outcome = await consumeRunEvents(res, {
+      onRunStatus: (p) => statuses.push(p.status),
+      onUnknownEvent: (name) => unknownEvents.push(name),
+    });
+
+    expect(outcome.kind).toBe("ok");
+    expect(statuses).toEqual(["waiting_for_approval", "running"]);
+    expect(unknownEvents).toEqual(["approval.request", "approval.responded"]);
   });
 });

@@ -43,4 +43,5 @@ export type SessionPhase =
   | "sending"
   | "queued"
   | "running"
+  | "waiting-approval"
   | "streaming";

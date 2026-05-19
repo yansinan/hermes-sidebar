@@ -77,6 +77,7 @@ export type RunStatus =
   | "started"
   | "queued"
   | "running"
+  | "waiting_for_approval"
   | "stopping"
   | "completed"
   | "failed"

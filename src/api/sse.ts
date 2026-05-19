@@ -47,7 +47,11 @@ export class SseParser {
         continue;
       }
 
-      if (line.startsWith(":")) continue; // comment
+      if (line.startsWith(":")) {
+        const comment = line.slice(1).replace(/^ /, "");
+        frames.push({ event: "comment", data: comment });
+        continue;
+      }
 
       const colon = line.indexOf(":");
       let field: string;

@@ -11,6 +11,7 @@ import type {
 } from "./types/profile";
 import type { Session, SessionPhase } from "./types/session";
 import type { Settings } from "./types/settings";
+import type { ActivityTimelineItem } from "./process-events";
 
 export interface ModelInfo {
   id: string;
@@ -113,7 +114,11 @@ export interface AppController {
   dismissBanner(bannerId: string): void;
 
   // Extraction result from service worker
-  addExtractionResult(userMessage: any, assistantMessage: any): Promise<void>;
+  addExtractionResult(
+    userMessage: any,
+    assistantMessage: any,
+    activityTimeline?: ActivityTimelineItem[],
+  ): Promise<void>;
   
   // Set extraction phase for UI feedback
   setExtractionPhase(phase?: "idle" | "extracting" | "processing"): void;

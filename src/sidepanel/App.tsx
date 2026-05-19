@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AppController } from "../shared/types";
 import { TopBar } from "./components/topbar/TopBar";
 import { ConversationArea } from "./components/conversation/ConversationArea";
@@ -9,6 +9,14 @@ import { SessionDrawer } from "./components/overlay/SessionDrawer";
 import { SettingsDrawer } from "./components/overlay/SettingsDrawer";
 import { buildSelectionSummaryDraft, buildPageBodySummaryDraft } from "../runtime";
 import { useAppState } from "./useAppState";
+import {
+  appendTimelineEvent,
+  normalizeProcessStatus,
+  resolveProcessBarText,
+  resolveProcessBarTransport,
+  stripStampedTimelineText,
+  type ActivityTimelineItem,
+} from "../shared/process-events";
 
 interface Props {
   controller: AppController;
@@ -20,6 +28,56 @@ export function App({ controller }: Props) {
   const state = useAppState(controller);
   const [overlay, setOverlay] = useState<OpenOverlay>("none");
   const [extractionStatusText, setExtractionStatusText] = useState<string>("");
+  const [extractionTransport, setExtractionTransport] = useState<string>("");
+  const extractionTimelineRef = useRef<ActivityTimelineItem[]>([]);
+
+  const activeSession = state.sessions.find((s) => s.id === state.activeSessionId) ?? null;
+  const activePhase = state.activeSessionId
+    ? state.sessionPhases[state.activeSessionId] ?? "idle"
+    : "idle";
+
+  const latestSystemText = (() => {
+    if (!activeSession) return "";
+    for (let i = activeSession.messages.length - 1; i >= 0; i -= 1) {
+      const m = activeSession.messages[i];
+      if (m.role !== "system") continue;
+      return stripStampedTimelineText(m.content);
+    }
+    return "";
+  })();
+
+  const latestAssistantMeta = (() => {
+    if (!activeSession) return { channel: "", trying: "" };
+    for (let i = activeSession.messages.length - 1; i >= 0; i -= 1) {
+      const m = activeSession.messages[i];
+      if (m.role !== "assistant") continue;
+      return {
+        channel: m.responseChannel ?? "",
+        trying: m.responseChannelTrying ?? "",
+      };
+    }
+    return { channel: "", trying: "" };
+  })();
+
+  const extractionActive = Boolean(state.extractionPhase && state.extractionPhase !== "idle");
+
+  const showProcessBar =
+    extractionActive || activePhase !== "idle";
+
+  const processBarText = resolveProcessBarText({
+    extractionActive,
+    extractionStatusText,
+    latestSystemText,
+    activePhase,
+    extractionPhase: state.extractionPhase,
+  });
+
+  const processBarTransport = resolveProcessBarTransport({
+    extractionActive,
+    extractionTransport,
+    responseChannel: latestAssistantMeta.channel,
+    responseTrying: latestAssistantMeta.trying,
+  });
 
   const openSessions = () => setOverlay("sessions");
   const openSettings = () => setOverlay("settings");
@@ -61,6 +119,7 @@ export function App({ controller }: Props) {
         console.log("[App] Extraction starting, showing loading spinner...");
         controller.setExtractionPhase("extracting");
         setExtractionStatusText("提取页面内容中...");
+        extractionTimelineRef.current = [];
         sendResponse({ ok: true });
       } 
       
@@ -68,10 +127,14 @@ export function App({ controller }: Props) {
       else if (message?.type === "extraction-processing") {
         console.log("[App] Now processing with AI...");
         controller.setExtractionPhase("processing");
-        if (typeof message.statusText === "string" && message.statusText.trim()) {
-          setExtractionStatusText(message.statusText.trim());
-        } else {
-          setExtractionStatusText("处理中...");
+        const normalizedStatus = normalizeProcessStatus(message.statusText);
+        setExtractionStatusText(normalizedStatus);
+        extractionTimelineRef.current = appendTimelineEvent(
+          extractionTimelineRef.current,
+          normalizedStatus,
+        );
+        if (typeof message.transportInfo === "string" && message.transportInfo.trim()) {
+          setExtractionTransport(message.transportInfo.trim());
         }
         sendResponse({ ok: true });
       } 
@@ -92,10 +155,14 @@ export function App({ controller }: Props) {
           console.log("[App] Assistant message preview:", assistantMessage?.content?.slice?.(0, 50), "...");
           
           // Add both messages to the active conversation asynchronously
-          void controller.addExtractionResult(userMessage, assistantMessage).then(() => {
+          void controller
+            .addExtractionResult(userMessage, assistantMessage, extractionTimelineRef.current)
+            .then(() => {
             console.log("[App] ✓ Extraction result added successfully, resetting UI...");
             controller.setExtractionPhase("idle");
             setExtractionStatusText("");
+            setExtractionTransport("");
+            extractionTimelineRef.current = [];
             sendResponse({ ok: true });
           });
           return true; // Tell Chrome we will respond asynchronously
@@ -110,6 +177,8 @@ export function App({ controller }: Props) {
         console.error("[App] Extraction error:", message.message);
         controller.setExtractionPhase("idle"); // Reset loading UI
         setExtractionStatusText("");
+        setExtractionTransport("");
+        extractionTimelineRef.current = [];
         sendResponse({ ok: true });
       }
 
@@ -201,28 +270,39 @@ export function App({ controller }: Props) {
         controller={controller}
         onOpenSettings={openSettings}
       />
-      {state.extractionPhase && state.extractionPhase !== "idle" && (
+      {showProcessBar && (
         <div style={{
           padding: "8px 12px",
           backgroundColor: "#f0f8ff",
           borderTop: "1px solid #d0e8ff",
           fontSize: "12px",
           color: "#0066cc",
-          textAlign: "center",
           display: "flex",
           alignItems: "center",
-          justifyContent: "center",
-          gap: "8px",
+          justifyContent: "space-between",
+          gap: "12px",
         }}>
-          <div style={{
-            width: "12px",
-            height: "12px",
-            border: "2px solid #0066cc",
-            borderTop: "2px solid transparent",
-            borderRadius: "50%",
-            animation: "spin 0.8s linear infinite",
-          }} />
-          {extractionStatusText || (state.extractionPhase === "extracting" ? "提取页面内容中..." : "处理中...")}
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", flex: 1 }}>
+            <div style={{
+              width: "12px",
+              height: "12px",
+              border: "2px solid #0066cc",
+              borderTop: "2px solid transparent",
+              borderRadius: "50%",
+              animation: "spin 0.8s linear infinite",
+            }} />
+            <span>{processBarText}</span>
+          </div>
+          <span style={{ fontSize: "11px", opacity: 0.7, whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: "6px" }}>
+            {processBarTransport && (
+              <span style={{ fontWeight: 500 }}>
+                {processBarTransport}
+              </span>
+            )}
+            <span>
+              {new Date().toLocaleTimeString("zh-CN", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+            </span>
+          </span>
         </div>
       )}
       {/* 输入分支：预览面板 + 快速动作 + 输入框 */}

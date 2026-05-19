@@ -38,6 +38,9 @@ function ToolProgressRow({ entry }: { entry: ToolProgressEntry }) {
         </span>
         <span className="tool-progress__name">{entry.toolName}</span>
         <span className="tool-progress__status">{entry.statusText}</span>
+        <span className="tool-progress__chevron" aria-hidden>
+          {open ? "⌄" : "›"}
+        </span>
       </button>
       {open && (
         <div className="tool-progress__details">

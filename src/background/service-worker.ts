@@ -3,6 +3,7 @@
 import { extractPageMainContent } from "../shared/extractPageMainContent";
 import { HermesApiClient, toWireMessages } from "../api/client";
 import { consumeChatStream } from "../api/stream";
+import { consumeRunEvents } from "../api/runs";
 import { createStorageGateway } from "../storage/gateway";
 import { shortId } from "../shared/utils/ids";
 import type { AssistantMessage, UserMessage } from "../shared/types/message";
@@ -15,6 +16,8 @@ import {
   type Settings,
 } from "../shared/types/settings";
 import { buildPromptFromTemplate } from "../shared/domain";
+import { normalizeProcessStatus } from "../shared/process-events";
+import { RUNS_EVENT_LABELS } from "../shared/runs-status";
 
 const MAX_LLM_WIKI_PROMPT_TOKENS = 80_000;
 const CUSTOM_MENU_ID_PREFIX = "hermes_custom_";
@@ -112,9 +115,16 @@ async function notifyUiError(message: string): Promise<void> {
   }
 }
 
-async function notifyUiProcessing(statusText: string): Promise<void> {
+async function notifyUiProcessing(
+  statusText: string,
+  transportInfo?: "chat" | "runs",
+): Promise<void> {
   try {
-    await chrome.runtime.sendMessage({ type: "extraction-processing", statusText });
+    await chrome.runtime.sendMessage({
+      type: "extraction-processing",
+      statusText: normalizeProcessStatus(statusText),
+      ...(transportInfo ? { transportInfo } : {}),
+    });
   } catch (sendErr) {
     logWarn("Failed to send extraction-processing", sendErr);
   }
@@ -232,12 +242,12 @@ async function ensureContextMenu(): Promise<void> {
   }
 }
 
-async function streamAiResponse(
+async function streamAiResponseWithRunsFallback(
   apiKey: string,
   modelId: string,
   prompt: string,
   apiBaseUrl: string,
-): Promise<string> {
+): Promise<{ content: string; responseChannel: "chat" | "runs" }> {
   const api = new HermesApiClient({ baseUrl: apiBaseUrl });
 
   const now = Date.now();
@@ -249,30 +259,103 @@ async function streamAiResponse(
     idempotencyKey: crypto.randomUUID?.() || `${now}-${Math.random()}`,
   };
 
-  logInfo("Opening chat stream...");
   let assistantContent = "";
+
+  // Try Runs API first
+  try {
+    logInfo("Attempting Runs API...");
+    await notifyUiProcessing(RUNS_EVENT_LABELS.createSubmitting, "runs");
+
+    const created = await api.createRun({
+      model: modelId,
+      messages: toWireMessages([userMessage]),
+      ...(apiKey ? { apiKey } : {}),
+    });
+
+    logInfo(`Runs created: run_id=${created.runId}`);
+    await notifyUiProcessing(RUNS_EVENT_LABELS.createAcceptedProcessBar, "runs");
+
+    const runEventsRes = await api.openRunEvents(created.runId, {
+      ...(apiKey ? { apiKey } : {}),
+    });
+
+    if (!runEventsRes.ok) {
+      throw new Error(`openRunEvents failed: ${runEventsRes.status}`);
+    }
+
+    logInfo("Consuming run events...");
+    await notifyUiProcessing(RUNS_EVENT_LABELS.eventsReceiving, "runs");
+
+    await consumeRunEvents(runEventsRes, {
+      onMessageDelta: (p) => {
+        assistantContent += p.delta;
+        logInfo("Runs delta, total length:", assistantContent.length);
+      },
+      onToolStarted: (p) => {
+        void notifyUiProcessing(
+          RUNS_EVENT_LABELS.toolRunningProcessBar(p.tool, p.preview),
+          "runs",
+        );
+      },
+      onToolCompleted: (p) => {
+        void notifyUiProcessing(
+          RUNS_EVENT_LABELS.toolCompletedProcessBar(p.tool, p.error),
+          "runs",
+        );
+      },
+      onReasoningAvailable: () => {
+        void notifyUiProcessing(RUNS_EVENT_LABELS.reasoningProcessBar, "runs");
+      },
+      onRunCompleted: (p) => {
+        if (assistantContent.length === 0 && p.output.length > 0) {
+          assistantContent = p.output;
+        } else if (
+          p.output.length > assistantContent.length &&
+          p.output.startsWith(assistantContent)
+        ) {
+          assistantContent = p.output;
+        }
+        logInfo("Runs completed, total content length:", assistantContent.length);
+      },
+    });
+
+    logInfo("Runs path successful, content length:", assistantContent.length);
+    return { content: assistantContent, responseChannel: "runs" };
+  } catch (runsErr) {
+    logWarn("Runs API failed, falling back to Chat:", runsErr);
+    if (assistantContent.length > 0) {
+      // If we already got partial content from Runs, return it
+      logInfo("Partial content from Runs, returning", assistantContent.length);
+      return { content: assistantContent, responseChannel: "runs" };
+    }
+    // Otherwise, continue to Chat fallback
+  }
+
+  // Fallback to Chat Completions
+  logInfo("Attempting Chat Completions fallback...");
+  await notifyUiProcessing("任务执行异常，切换到快速模式...", "chat");
+  assistantContent = "";
   let thinkingAnnounced = false;
 
-  await notifyUiProcessing("请求已发送，等待模型响应...");
   const res = await api.openChatStream({
     model: modelId,
     messages: toWireMessages([userMessage]),
     stream: true,
-    apiKey,
+    ...(apiKey ? { apiKey } : {}),
   });
 
-  logInfo("Consuming stream...");
-  await notifyUiProcessing("正在接收模型流式响应...");
+  logInfo("Consuming chat stream...");
+  await notifyUiProcessing("正在接收模型流式响应...", "chat");
 
   await consumeChatStream(res, {
     onTextDelta: (delta) => {
       assistantContent += delta;
-      logInfo("Stream delta, total length:", assistantContent.length);
+      logInfo("Chat delta, total length:", assistantContent.length);
     },
     onThinkingDelta: (_delta) => {
       if (!thinkingAnnounced) {
         thinkingAnnounced = true;
-        void notifyUiProcessing("模型思考中...");
+        void notifyUiProcessing("模型思考中...", "chat");
       }
     },
     onToolProgress: (payload) => {
@@ -281,12 +364,13 @@ async function streamAiResponse(
         payload.status === "running" && payload.label
           ? `工具 ${payload.tool} ${status}: ${payload.label}`
           : `工具 ${payload.tool} ${status}`,
+        "chat",
       );
     },
   });
 
-  logInfo("Stream complete, total content length:", assistantContent.length);
-  return assistantContent;
+  logInfo("Chat fallback complete, total content length:", assistantContent.length);
+  return { content: assistantContent, responseChannel: "chat" };
 }
 
 async function ensureModelId(
@@ -335,13 +419,16 @@ async function runPromptWorkflow(prompt: string, settings: Settings): Promise<vo
   }
 
   let assistantContent = "";
+  let responseChannel: "chat" | "runs" = "chat";
   try {
-    assistantContent = await streamAiResponse(
+    const result = await streamAiResponseWithRunsFallback(
       settings.apiKey,
       modelId,
       prompt,
       settings.apiBaseUrl,
     );
+    assistantContent = result.content;
+    responseChannel = result.responseChannel;
   } catch (apiError) {
     logError("API call failed:", apiError);
     assistantContent = `(整理失败: ${apiError instanceof Error ? apiError.message : String(apiError)})`;
@@ -353,6 +440,7 @@ async function runPromptWorkflow(prompt: string, settings: Settings): Promise<vo
     content: assistantContent,
     createdAt: Date.now(),
     modelId,
+    responseChannel,
     streaming: false,
   };
 

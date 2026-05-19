@@ -203,6 +203,86 @@ describe("controller send — streaming", () => {
     expect(assistant.badge?.kind).toBe("connection-interrupted");
   });
 
+  it("emits chat lifecycle activity messages while keeping tool progress in the assistant bubble", async () => {
+    const fetchImpl = makeFetch({
+      chatStream: () =>
+        sseStream([
+          'data: {"choices":[{"delta":{"reasoning":"先查一下"}}],"session_id":"srv-chat-1"}\n\n',
+          'event: hermes.tool.progress\n' +
+            'data: {"tool":"session_search","status":"running","toolCallId":"call-1","label":"querying"}\n\n',
+          'event: hermes.tool.progress\n' +
+            'data: {"tool":"session_search","status":"completed","toolCallId":"call-1"}\n\n',
+          'data: {"choices":[{"delta":{"content":"找到上一条了"}}]}\n\n',
+          'data: [DONE]\n\n',
+        ]),
+    });
+    const c = await makeController(fetchImpl);
+    await c.saveSettings({ useRunsApi: false, reuseServerSession: true });
+    c.setDraftInput("查一下上一条");
+    await c.send();
+
+    const session = c.getState().sessions[0]!;
+    const systemTexts = session.messages
+      .filter((m) => m.role === "system")
+      .map((m) => m.content.replace(/^\d{2}:\d{2}:\d{2}\s+/, ""));
+    expect(systemTexts).toContain("已连接流式回复");
+    expect(systemTexts).toContain("模型正在分析问题");
+    expect(systemTexts).toContain("模型开始生成回复");
+    expect(systemTexts).toContain("回复生成完成");
+
+    const assistant = session.messages.find((m) => m.role === "assistant") as {
+      content: string;
+      toolProgress?: Array<{ toolName: string; phase: string }>;
+    };
+    expect(assistant.content).toBe("找到上一条了");
+    expect(assistant.toolProgress).toEqual([
+      expect.objectContaining({ toolName: "session_search", phase: "end" }),
+    ]);
+    expect(session.serverSessionRef).toBe("srv-chat-1");
+  });
+
+  it("reuses captured server session ref on the next chat request", async () => {
+    const seenHeaders: Array<string | undefined> = [];
+    let chatCount = 0;
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/v1/models")) {
+        return jsonResponse(200, { data: [{ id: "m1" }] });
+      }
+      if (url.endsWith("/v1/health") || url.endsWith("/health")) {
+        return jsonResponse(200, {});
+      }
+      if (url.endsWith("/v1/chat/completions")) {
+        chatCount += 1;
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        seenHeaders.push(headers["X-Hermes-Session-Id"]);
+        if (chatCount === 1) {
+          return sseStream([
+            'data: {"choices":[{"delta":{"content":"first"}}],"session_id":"srv-chat-2"}\n\n',
+            'data: [DONE]\n\n',
+          ]);
+        }
+        return sseStream([
+          'data: {"choices":[{"delta":{"content":"second"}}]}\n\n',
+          'data: [DONE]\n\n',
+        ]);
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const c = await makeController(fetchImpl as unknown as ReturnType<typeof makeFetch>);
+    await c.saveSettings({ useRunsApi: false, reuseServerSession: true });
+
+    c.setDraftInput("first chat");
+    await c.send();
+    c.setDraftInput("second chat");
+    await c.send();
+
+    expect(seenHeaders).toEqual([undefined, "srv-chat-2"]);
+    const session = c.getState().sessions[0]!;
+    expect(session.serverSessionRef).toBe("srv-chat-2");
+  });
+
   it("prefers Runs API and streams content from run events", async () => {
     const fetchImpl = vi.fn(async (input: string | URL | Request) => {
       const url = typeof input === "string" ? input : input.toString();
@@ -450,6 +530,68 @@ describe("controller send — streaming", () => {
     };
     expect(assistant.content).toBe("Recovered");
     expect(assistant.responseChannel).toBe("runs");
+  });
+
+  it("reuses captured server session ref on the next runs request", async () => {
+    const seenRunBodies: Array<Record<string, unknown>> = [];
+    let runCount = 0;
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/v1/models")) {
+        return jsonResponse(200, { data: [{ id: "m1" }] });
+      }
+      if (url.endsWith("/v1/health") || url.endsWith("/health")) {
+        return jsonResponse(200, {});
+      }
+      if (url.endsWith("/v1/runs")) {
+        runCount += 1;
+        seenRunBodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+        return jsonResponse(200, { run_id: `run-${runCount}`, status: "started" });
+      }
+      if (url.endsWith("/v1/runs/run-1/events")) {
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              const encoder = new TextEncoder();
+              controller.enqueue(
+                encoder.encode(
+                  'data: {"event":"run.completed","run_id":"run-1","timestamp":1000,"output":"first"}\n\n',
+                ),
+              );
+              controller.close();
+            },
+          }),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "text/event-stream",
+              "X-Hermes-Session-Id": "srv-runs-1",
+            },
+          },
+        );
+      }
+      if (url.endsWith("/v1/runs/run-2/events")) {
+        return sseStream([
+          'data: {"event":"run.completed","run_id":"run-2","timestamp":1001,"output":"second"}\n\n',
+        ]);
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const c = await makeController(fetchImpl as unknown as ReturnType<typeof makeFetch>);
+    await c.saveSettings({ reuseServerSession: true });
+
+    c.setDraftInput("first run");
+    await c.send();
+    c.setDraftInput("second run");
+    await c.send();
+
+    expect(seenRunBodies).toHaveLength(2);
+    expect(seenRunBodies[0]?.session_id).toBeUndefined();
+    expect(seenRunBodies[1]?.session_id).toBe("srv-runs-1");
+
+    const session = c.getState().sessions[0]!;
+    expect(session.serverSessionRef).toBe("srv-runs-1");
   });
 });
 

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "hermes-sidebar",
-  "version": "0.0.0",
+  "version": "0.2.0",
   "description": "Chrome Side Panel extension for talking to a Hermes Agent API server.",
   "permissions": [
     "sidePanel",
